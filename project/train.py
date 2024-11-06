@@ -11,72 +11,115 @@ from torchaudio.transforms import MelSpectrogram, Spectrogram
 import os
 import csv
 from utils.utils import save_tensor_as_png , get_latest_checkpoint
+import json
 def main():
     device = CONFIG['device']
+    version = CONFIG.get('version', 'v0')
 
     # Create logs directory if it doesn't exist
     logs_dir = CONFIG.get('logs_dir', 'logs')
     os.makedirs(logs_dir, exist_ok=True)
 
     # Define paths for training and evaluation metrics
-    train_metrics_path = os.path.join(logs_dir, 'train_metrics.csv')
-    eval_metrics_path = os.path.join(logs_dir, 'eval_metrics.csv')
+    train_metrics_path = os.path.join(logs_dir, f'{version}_train_metrics.csv')
+    eval_metrics_path = os.path.join(logs_dir, f'{version}_eval_metrics.csv')
+    confg_load_path = os.path.join(logs_dir, f'{version}_config.json')
+    if not os.path.exists(confg_load_path):
+        with open(confg_load_path, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
+        print(f"Created config file at {confg_load_path}")
+    
 
     # Initialize CSV files with headers if they don't exist
     if not os.path.exists(train_metrics_path):
         with open(train_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['epoch', 'average_loss', 'average_accuracy'])
+            writer.writerow(['epoch', 'average_loss', 'average_accuracy',"batch_failed"])
         print(f"Created training metrics file at {train_metrics_path}")
     
     if not os.path.exists(eval_metrics_path):
         with open(eval_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['epoch', 'average_loss', 'average_accuracy'])
+            writer.writerow(['epoch', 'average_loss', 'average_accuracy',"batch_failed"])
         print(f"Created evaluation metrics file at {eval_metrics_path}")
+    
+    transforms_config = {
+        "n_fft": CONFIG.get("data_nfft", 4096),
+        "win_length": CONFIG.get("data_win_length", 4096),
+        "hop_length": CONFIG.get("data_hop_length", 256),
+        "power": CONFIG.get("data_power", 2)
+    }
 
-    # Data transforms
-    transforms = Spectrogram(
-        n_fft=4096,       # Double the FFT components for higher frequency resolution
-        win_length=4096,  # Match win_length to n_fft for maximum resolution
-        hop_length=256,   # Smaller hop length for higher time resolution
-        power=2           # Use power spectrogram for amplitude squared
-    )    
+    # Example usage
+    transforms = Spectrogram(**transforms_config)
 
     # Datasets and DataLoaders
     print("Loading data from directory:", CONFIG['data_dir'])
 
     all_audio_files = [f for f in os.listdir(CONFIG['data_dir']) if f.endswith('.wav')]
-    print(f"Found {len(all_audio_files)} audio files.")
+
+
+    # Initialize train and validation lists
+    train_audio_files = []
+    val_audio_files = []
+    start_epoch = 0
     
-    if len(all_audio_files) == 0:
-        raise ValueError(f"No '.wav' files found in directory: {CONFIG['data_dir']}")
+    model_save_dir = CONFIG['model_save_path']
+    latest_checkpoint, start_epoch = get_latest_checkpoint(model_save_dir, version)
+    model = DETRAudio(CONFIG).to(device)
+    model_config_path = os.path.join(logs_dir, f'{version}_model_config')
+    if not os.path.exists(model_config_path):
+        with open(model_config_path, 'w') as f:
+            f.write(str(model))
+            
+    criterion = CustomCriterion(CONFIG).to(device)
+    optimizer = optim.AdamW(
+        model.parameters(), 
+        lr=CONFIG['lr'], 
+        weight_decay=CONFIG['weight_decay']
+    )
 
-    # Optionally, print a sample file
-    print(f"Sample audio file: {all_audio_files[0]}")
+    # Optionally resume from a checkpoint
 
-    # Train-validation split
-    import random
-    random.seed(CONFIG.get('random_seed', 42))  # For reproducibility
-    random.shuffle(all_audio_files)
-    split = int(0.8 * len(all_audio_files))
-    train_audio_files = all_audio_files[:split]
-    val_audio_files = all_audio_files[split:]
-    print(f"Training samples: {len(train_audio_files)}, Validation samples: {len(val_audio_files)}")
+    if latest_checkpoint:
+        checkpoint = torch.load(latest_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        print(f"Resumed from checkpoint: {latest_checkpoint}, Epoch {checkpoint['epoch']}")
+        
+        # Load the split from the checkpoint
+        train_audio_files = checkpoint.get('train_audio_files', [])
+        val_audio_files = checkpoint.get('val_audio_files', [])
+        if not train_audio_files or not val_audio_files:
+            raise ValueError("Checkpoint does not contain train and validation split information.")
+    else:
+        start_epoch = 1  # Start from epoch 1 if no checkpoint is found
+        print("No checkpoint found. Starting training from scratch.")
+        import random
+        random.shuffle(all_audio_files)
+        split_ratio = CONFIG.get('split_ratio', 0.8)
+        split_index = int(len(all_audio_files) * split_ratio)
+        train_audio_files = all_audio_files[:split_index]
+        val_audio_files = all_audio_files[split_index:]
+
+
 
     train_dataset = AudioDataset(
         train_audio_files, 
         CONFIG['cache_dir'], 
         split='train', 
         transforms=transforms, 
-        config=CONFIG
+        config=CONFIG,
+        transforms_spec=transforms_config
     )
     val_dataset = AudioDataset(
         val_audio_files, 
         CONFIG['cache_dir'], 
         split='val', 
         transforms=transforms, 
-        config=CONFIG
+        config=CONFIG,
+        transforms_spec=transforms_config
     )
 
     train_loader = DataLoader(
@@ -94,34 +137,11 @@ def main():
         collate_fn=val_dataset.collate_fn
     )
 
-    # Model, criterion, optimizer
-    model = DETRAudio(CONFIG).to(device)
-    criterion = CustomCriterion(CONFIG).to(device)
-    optimizer = optim.AdamW(
-        model.parameters(), 
-        lr=CONFIG['lr'], 
-        weight_decay=CONFIG['weight_decay']
-    )
 
-    # Optionally resume from a checkpoint
-    start_epoch = 0
-    version = CONFIG.get('version', 'v0')
-    model_save_dir = CONFIG['model_save_path']
-    latest_checkpoint, start_epoch = get_latest_checkpoint(model_save_dir, version)
 
-    if latest_checkpoint:
-        checkpoint = torch.load(latest_checkpoint, map_location=CONFIG['device'])
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"Resumed from checkpoint: {latest_checkpoint}, Epoch {checkpoint['epoch']}")
-    else:
-        start_epoch = 1  # Start from epoch 1 if no checkpoint is found
-        print("No checkpoint found. Starting training from scratch.")
-
-    def save_checkpoint(model_save_dir, version, epoch, model, optimizer, CONFIG):
+    def save_checkpoint(model_save_dir, version, epoch, model, optimizer, CONFIG, train_audio_files, val_audio_files):
         """
-        Saves the model checkpoint with the specified version and epoch.
+        Saves the model checkpoint with the specified version and epoch, including train and validation splits.
 
         Args:
             model_save_dir (str): Directory where model checkpoints are saved.
@@ -130,6 +150,8 @@ def main():
             model (torch.nn.Module): The model to save.
             optimizer (torch.optim.Optimizer): The optimizer to save.
             CONFIG (dict): Configuration dictionary.
+            train_audio_files (list): List of training audio filenames.
+            val_audio_files (list): List of validation audio filenames.
         """
         checkpoint_path = os.path.join(model_save_dir, f"{version}_model_e{epoch}.pth")
         try:
@@ -137,18 +159,21 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'config': CONFIG
+                'config': CONFIG,
+                'train_audio_files': train_audio_files,
+                'val_audio_files': val_audio_files
             }, checkpoint_path)
             print(f"Saved checkpoint at {checkpoint_path}")
         except Exception as e:
             print(f"Error saving checkpoint: {e}")
 
+
     # Training Loop
     for epoch in range(start_epoch, CONFIG['epochs']):
-        print(f"\n--- Epoch {epoch + 1}/{CONFIG['epochs']} ---")
+        print(f"\n--- Epoch {epoch}/{CONFIG['epochs']} ---")
 
         # Train for one epoch
-        avg_train_loss, avg_train_acc = train_one_epoch(
+        avg_train_loss, avg_train_acc , batch_failed = train_one_epoch(
             model, 
             criterion, 
             train_loader, 
@@ -157,24 +182,24 @@ def main():
             epoch + 1, 
             CONFIG
         )
-        print(f"Training   - Epoch: {epoch + 1}, Loss: {avg_train_loss:.4f}, Accuracy: {avg_train_acc:.4f}")
+        print(f"Training   - Epoch: {epoch}, Loss: {avg_train_loss:.4f}, Accuracy: {avg_train_acc:.4f}")
         try:
             with open(train_metrics_path, mode='a', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow([epoch + 1, f"{avg_train_loss:.4f}", f"{avg_train_acc:.4f}"])
+                writer.writerow([epoch, f"{avg_train_loss:.4f}", f"{avg_train_acc:.4f}",batch_failed])
             print(f"Appended training metrics to {train_metrics_path}")
         except Exception as e:
             print(f"Error writing to training metrics file: {e}")
 
         if epoch % 5 == 0:
         # Evaluate on validation set
-            avg_val_loss, avg_val_acc = evaluate(
+            avg_val_loss, avg_val_acc ,batch_failed= evaluate(
                 model, 
                 criterion, 
                 val_loader, 
                 device
             )
-            print(f"Validation - Epoch: {epoch + 1}, Loss: {avg_val_loss:.4f}, Accuracy: {avg_val_acc:.4f}")
+            print(f"Validation - Epoch: {epoch }, Loss: {avg_val_loss:.4f}, Accuracy: {avg_val_acc:.4f}")
 
             # Append training metrics to CSV
 
@@ -183,20 +208,22 @@ def main():
             try:
                 with open(eval_metrics_path, mode='a', newline='') as file:
                     writer = csv.writer(file)
-                    writer.writerow([epoch + 1, f"{avg_val_loss:.4f}", f"{avg_val_acc:.4f}"])
+                    writer.writerow([epoch , f"{avg_val_loss:.4f}", f"{avg_val_acc:.4f}",batch_failed])
                 print(f"Appended evaluation metrics to {eval_metrics_path}")
             except Exception as e:
                 print(f"Error writing to evaluation metrics file: {e}")
 
         # Save model checkpoint
-    save_checkpoint(
-        model_save_dir=model_save_dir,
-        version=version,
-        epoch=epoch,
-        model=model,
-        optimizer=optimizer,
-        CONFIG=CONFIG
-    )
+            save_checkpoint(
+                model_save_dir=model_save_dir,
+                version=version,
+                epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                CONFIG=CONFIG,
+                train_audio_files=train_audio_files,
+                val_audio_files=val_audio_files
+            )
 
     print("\nTraining complete.")
 

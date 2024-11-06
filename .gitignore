@@ -1,6 +1,7 @@
 
 venv/
-FluidR3_GM.*
+
+Fluid_related/FluidR3_GM.*
 output/
 output/*
 project/data_2/*
@@ -8,7 +9,7 @@ project/data_2
 project/data
 project/output/*
 project/output/
-project/model/*.pth
+project/models/model_data/*.pth
 project/data/*
 
 

@@ -7,11 +7,13 @@ from torch.nn.functional import interpolate
 class DETRAudio(nn.Module):
     def __init__(self, config):
         super(DETRAudio, self).__init__()
-        dimension = 128 if config.get("dimension",None) is None else config["dimension"]
+        dimension = config["model_structure"].get("dimension",128) 
+        num_encoder_layers = config["model_structure"].get("num_encoder_layers",1)
+        num_decoder_layers = config["model_structure"].get("num_decoder_layers",1)
         self.backbone = resnet50()
         self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
-        self.transformer = nn.Transformer(d_model=dimension, num_encoder_layers=1, num_decoder_layers=2)
+        self.transformer = nn.Transformer(d_model=dimension, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers)
         self.num_queries = config['max_objects']
         self.query_embed = nn.Embedding(self.num_queries, dimension)
         self.input_proj = nn.Conv2d(2048, dimension, kernel_size=1)

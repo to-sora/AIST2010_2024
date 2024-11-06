@@ -29,7 +29,7 @@ class AudioDataset(Dataset):
         self.audio_files = audiofile
 
         # debug
-        self.audio_files = self.audio_files[:100]
+        # self.audio_files = self.audio_files[:100]
 
         # Initialize lists to hold data in RAM
         self.spectrograms = []

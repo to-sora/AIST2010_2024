@@ -8,22 +8,28 @@ from typing import Callable, Optional, Dict, Any
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 class AudioDataset(Dataset):
-    def __init__(self, audiofile, cache_dir, split='train', transforms=None,freq_limit=4200 ,config=None):
+    def __init__(self, audiofile, cache_dir, split='train', transforms=None,freq_limit=4200 ,config=None,transforms_spec=None):
         self.cache_dir = cache_dir
         self.freq_limit = freq_limit
         os.makedirs(self.cache_dir, exist_ok=True)
-        self.transforms = transforms if transforms is not None else transforms.Spectrogram(
-            n_fft=2048,       # Number of FFT components, defines frequency resolution
-            win_length=2048,  # Window length, typically set equal to n_fft for maximum resolution
-            hop_length=512,   # Hop length to control time resolution
-            power=2           # Use power spectrogram (amplitude squared)
-        )
-
+        cache_prefix = ""
+        if transforms is None:
+            if transforms_spec is None:
+                self.transforms = torchaudio.Spectrogram(n_fft=4096, win_length=4096, hop_length=256, power=2)
+                cache_prefix += "4096_4096_256_2"
+            else:
+                self.transforms = transforms_spec
+                for key in transforms_spec.keys():
+                    cache_prefix += f"{key}_{transforms_spec[key]}_"
+        else:
+            self.transforms = transforms
+            for key in transforms_spec.keys():
+                cache_prefix += f"{key}_{transforms_spec[key]}_"
         # Get list of audio files
         self.audio_files = audiofile
 
         # debug
-        # self.audio_files = self.audio_files[:1000]
+        self.audio_files = self.audio_files[:100]
 
         # Initialize lists to hold data in RAM
         self.spectrograms = []
@@ -32,7 +38,7 @@ class AudioDataset(Dataset):
         # Load all data into RAM
         for audio_filename in tqdm(self.audio_files, desc=f"Loading {split} data"):
             audio_path = os.path.join(self.data_dir, audio_filename)
-            cache_path = os.path.join(self.cache_dir, audio_filename.replace('.wav', '.pt'))
+            cache_path = os.path.join(self.cache_dir, cache_prefix + '_'+ audio_filename.replace('.wav', '.pt'))
 
             def load_audio(audio_path,cach_path):
                 waveform, sample_rate = torchaudio.load(audio_path)

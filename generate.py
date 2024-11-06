@@ -11,7 +11,7 @@ from pydub import AudioSegment
 
 # Configuration
 OUTPUT_DIR = "output"  # Directory to save MIDI, WAV, and CSV files
-DEFAULT_SOUND_FONT_PATH = "FluidR3_GM.sf2"  # Update this path to your SoundFont
+DEFAULT_SOUND_FONT_PATH = "Fluid_related/FluidR3_GM.sf2"  # Update this path to your SoundFont
 NUM_FILES_PER_BATCH = 5  # Number of MIDI-WAV-CSV sets to generate per batch
 NUM_BATCHES = 3  # Number of batches to generate for diversity
 

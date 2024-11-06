@@ -18,6 +18,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, con
     Returns:
         tuple: (average_loss, average_accuracy)
     """
+    batch_failed = 0
     model.train()
     # If the criterion has a train mode, enable it. Otherwise, this line can be removed.
     if hasattr(criterion, 'train'):
@@ -65,12 +66,13 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, con
         except Exception as e:
             print(f"Error in training: {e}")
             print(f"SAMPLES shape: {shape}")
+            batch_failed += 1
 
     # Compute final averages
     avg_loss = total_loss / valid_steps if valid_steps > 0 else 0.0
     avg_accuracy = total_accuracy / valid_steps if valid_steps > 0 else 0.0
 
-    return avg_loss, avg_accuracy
+    return avg_loss, avg_accuracy , batch_failed
 
 def evaluate(model, criterion, data_loader, device):
     """
@@ -85,6 +87,7 @@ def evaluate(model, criterion, data_loader, device):
     Returns:
         tuple: (average_loss, average_accuracy)
     """
+    batch_failed = 0
     model.eval()
     # If the criterion has an eval mode, enable it. Otherwise, this line can be removed.
     if hasattr(criterion, 'eval'):
@@ -117,7 +120,8 @@ def evaluate(model, criterion, data_loader, device):
             except Exception as e:
                 print(f"Error in evaluation: {e}")
                 print(f"SAMPLES shape: {shape}")
+                batch_failed += 1
 
     avg_loss = sum(losses) / len(losses) if len(losses) > 0 else 0.0
     avg_accuracy = sum(accuracies) / len(accuracies) if len(accuracies) > 0 else 0.0
-    return avg_loss, avg_accuracy
+    return avg_loss, avg_accuracy , batch_failed

@@ -1,8 +1,6 @@
 # utils/criterion.py
 import torch
 import torch.nn as nn
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
@@ -71,26 +69,18 @@ class HungarianMatcher(nn.Module):
                 self.cost_pitch * cost_pitch + \
                 self.cost_regression * cost_reg  # [num_queries, num_targets]
 
-            C = C.cpu()  # [num_queries, num_targets]
+            C = C.cpu().numpy()  # Convert to numpy for linear_sum_assignment
             row, col = linear_sum_assignment(C)
             row = torch.as_tensor(row, dtype=torch.int64)
             col = torch.as_tensor(col, dtype=torch.int64)
 
-            # back to orginal device
+            # back to original device
             row = row.to(pred_note.device)
             col = col.to(pred_note.device)
             all_indices.append((row, col))
 
         return all_indices
 
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class CustomCriterion(nn.Module):
     def __init__(self, config=None):
@@ -199,7 +189,7 @@ class CustomCriterion(nn.Module):
         # print("Loss Note Type: ", loss_note_type)
         loss_instrument = self.instrument_loss(pred_instrument, tgt_instrument_classes)
         # print("Loss Instrument: ", loss_instrument)
-        # print("dafeult: ", num_pitches)
+        # print("default: ", num_pitches)
         loss_pitch = self.pitch_loss(pred_pitch, tgt_pitch_classes)
         # print("Loss Pitch: ", loss_pitch)
         
@@ -229,18 +219,80 @@ class CustomCriterion(nn.Module):
         else:
             losses['loss_regression'] = torch.tensor(0.0, device=device)
 
+        # Initialize debuginfo dictionary
+        debuginfo = {}
 
         with torch.no_grad():
-            # Get predicted class labels for pitch
-            pred_pitch_labels = pred_pitch.argmax(dim=1)  # [batch_size * num_queries]
-            
-            # Exclude "no object" predictions and targets
-            valid_indices = tgt_pitch_classes != self.num_pitches  # "no object" class index
-            if valid_indices.any():
-                correct = (pred_pitch_labels[valid_indices] == tgt_pitch_classes[valid_indices]).sum()
-                total = valid_indices.sum()
-                pitch_accuracy = correct.float() / total.float()
+            epsilon = 1e-7  # Small value to avoid division by zero
+
+            # Function to compute accuracy and min F1 for a classification head
+            def compute_metrics(pred_logits, tgt_classes, num_classes, no_object_idx):
+                pred_labels = pred_logits.argmax(dim=1)  # [N]
+                valid = tgt_classes != no_object_idx  # [N]
+                correct = (pred_labels[valid] == tgt_classes[valid]).sum().float()
+                total = valid.sum().float()
+                accuracy = correct / (total + epsilon)
+
+                f1_scores = []
+                for cls in range(1, num_classes):  # Exclude "no object" class
+                    true_positive = ((pred_labels == cls) & (tgt_classes == cls)).sum().float()
+                    predicted_positive = (pred_labels == cls).sum().float()
+                    actual_positive = (tgt_classes == cls).sum().float()
+
+                    precision = true_positive / (predicted_positive + epsilon)
+                    recall = true_positive / (actual_positive + epsilon)
+                    f1 = 2 * precision * recall / (precision + recall + epsilon)
+                    f1_scores.append(f1)
+
+                if f1_scores:
+                    min_f1 = min(f1_scores)
+                else:
+                    min_f1 = torch.tensor(0.0, device=device)
+
+                return accuracy, min_f1
+
+            # Compute metrics for note_type
+            note_acc, NoteMinF1 = compute_metrics(
+                pred_logits=pred_note_type,
+                tgt_classes=tgt_note_type_classes,
+                num_classes=num_note_types,
+                no_object_idx=0
+            )
+            debuginfo['note_acc'] = note_acc
+            debuginfo['NoteMinF1'] = NoteMinF1
+
+            # Compute metrics for instrument
+            InstAcc, InstMinF1 = compute_metrics(
+                pred_logits=pred_instrument,
+                tgt_classes=tgt_instrument_classes,
+                num_classes=num_instruments,
+                no_object_idx=0
+            )
+            debuginfo['InstAcc'] = InstAcc
+            debuginfo['InstMinF1'] = InstMinF1
+
+            # Compute metrics for pitch
+            pit_acc, pit_MF1 = compute_metrics(
+                pred_logits=pred_pitch,
+                tgt_classes=tgt_pitch_classes,
+                num_classes=num_pitches,
+                no_object_idx=num_pitches - 1
+            )
+            debuginfo['pit_acc'] = pit_acc
+            debuginfo['pit_MF1'] = pit_MF1
+
+            # Compute MSE for each regression task
+            if matched_preds:
+                mse_start_time = F.mse_loss(pred_regression_matched[:, 0], tgt_regression_matched[:, 0], reduction='mean')
+                mse_duration = F.mse_loss(pred_regression_matched[:, 1], tgt_regression_matched[:, 1], reduction='mean')
+                mse_velocity = F.mse_loss(pred_regression_matched[:, 2], tgt_regression_matched[:, 2], reduction='mean')
             else:
-                pitch_accuracy = torch.tensor(0.0, device=device)
-            
-        return losses , pitch_accuracy
+                mse_start_time = torch.tensor(0.0, device=device)
+                mse_duration = torch.tensor(0.0, device=device)
+                mse_velocity = torch.tensor(0.0, device=device)
+
+            debuginfo['R_M_ST'] = mse_start_time
+            debuginfo['R_M_dur'] = mse_duration
+            debuginfo['R_M_v'] = mse_velocity
+
+        return losses, debuginfo

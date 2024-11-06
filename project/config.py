@@ -22,7 +22,7 @@ CONFIG = {
     },
     'model_structure': {
         "dimension": 128,
-        "num_encoder_layers": 2,
+        "num_encoder_layers": 1,
         "num_decoder_layers": 2,
 
     },

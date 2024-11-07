@@ -29,6 +29,9 @@ class AudioDataset(Dataset):
         self.audio_files = audiofile
 
         # debug
+        if config['debug']:
+            self.audio_files = self.audio_files[:100]
+            print("Debug mode, using only 100 samples")
         # self.audio_files = self.audio_files[:100]
 
         # Initialize lists to hold data in RAM

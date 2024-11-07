@@ -6,16 +6,23 @@ from utils.dataset import AudioDataset
 from models.detr_audio import DETRAudio
 from utils.engine import train_one_epoch, evaluate
 from utils.criterion import CustomCriterion
-from config import CONFIG
 from torchaudio.transforms import MelSpectrogram, Spectrogram
 import os
 import csv
 from utils.utils import save_tensor_as_png, get_latest_checkpoint
-import json
+import json5 as json
 
-def main():
+def main(CONFIG):
     device = CONFIG['device']
     version = CONFIG.get('version', 'v0')
+
+    # Set seed for reproducibility if defined in config debug
+    if CONFIG.get('debug', True):
+        torch.manual_seed(0)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        import random
+        random.seed(42)
 
     # Create logs directory if it doesn't exist
     logs_dir = CONFIG.get('logs_dir', 'logs')
@@ -24,11 +31,11 @@ def main():
     # Define paths for training and evaluation metrics
     train_metrics_path = os.path.join(logs_dir, f'{version}_train_metrics.csv')
     eval_metrics_path = os.path.join(logs_dir, f'{version}_eval_metrics.csv')
-    confg_load_path = os.path.join(logs_dir, f'{version}_config.json')
-    if not os.path.exists(confg_load_path):
-        with open(confg_load_path, 'w') as f:
+    config_save_path = os.path.join(logs_dir, f'{version}_config.json')
+    if not os.path.exists(config_save_path):
+        with open(config_save_path, 'w') as f:
             json.dump(CONFIG, f, indent=4)
-        print(f"Created config file at {confg_load_path}")
+        print(f"Created config file at {config_save_path}")
 
     # Define the metric keys based on your latest changes
     metric_keys = ['pit_acc', 'InstAcc', 'R_M_ST', 'R_M_dur', 'R_M_v']
@@ -38,7 +45,7 @@ def main():
         with open(train_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
             # Updated header to include all metric keys
-            header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"]
+            header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"] + ["lr"]
             writer.writerow(header)
         print(f"Created training metrics file at {train_metrics_path}")
 
@@ -46,7 +53,7 @@ def main():
         with open(eval_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
             # Updated header to include all metric keys
-            header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"]
+            header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"] +["lr"]
             writer.writerow(header)
         print(f"Created evaluation metrics file at {eval_metrics_path}")
 
@@ -84,6 +91,24 @@ def main():
         weight_decay=CONFIG['weight_decay']
     )
 
+    # Create scheduler based on CONFIG
+    scheduler_type = CONFIG.get('scheduler_type', None)
+    if scheduler_type is not None:
+        scheduler_params = CONFIG.get('scheduler_params', {})
+        if scheduler_type == 'StepLR':
+            scheduler = optim.lr_scheduler.StepLR(optimizer, **scheduler_params)
+        elif scheduler_type == 'ExponentialLR':
+            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, **scheduler_params)
+        elif scheduler_type == 'ReduceLROnPlateau':
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **scheduler_params)
+        elif scheduler_type == 'CosineAnnealingLR':
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, **scheduler_params)
+        # Add more schedulers if needed
+        else:
+            raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
+    else:
+        scheduler = None
+
     # Optionally resume from a checkpoint
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=device)
@@ -97,6 +122,10 @@ def main():
         val_audio_files = checkpoint.get('val_audio_files', [])
         if not train_audio_files or not val_audio_files:
             raise ValueError("Checkpoint does not contain train and validation split information.")
+
+        # Load scheduler state dict
+        if 'scheduler_state_dict' in checkpoint and scheduler is not None:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     else:
         start_epoch = 1  # Start from epoch 1 if no checkpoint is found
         print("No checkpoint found. Starting training from scratch.")
@@ -123,23 +152,37 @@ def main():
         config=CONFIG,
         transforms_spec=transforms_config
     )
+    if CONFIG.get('debug', False):
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=CONFIG['batch_size'], 
+            shuffle=True, 
+            num_workers=CONFIG['num_workers'],
+            collate_fn=train_dataset.collate_fn
+        )
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=CONFIG['batch_size'], 
+            shuffle=False, 
+            num_workers=CONFIG['num_workers'],
+            collate_fn=val_dataset.collate_fn
+        )
+    else:
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=CONFIG['batch_size'], 
+            shuffle=False, 
+            num_workers=CONFIG['num_workers']
+        )
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=CONFIG['batch_size'], 
+            shuffle=False, 
+            num_workers=CONFIG['num_workers']
+        )
+        
 
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=CONFIG['batch_size'], 
-        shuffle=True, 
-        num_workers=CONFIG['num_workers'],
-        collate_fn=train_dataset.collate_fn
-    )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=CONFIG['batch_size'], 
-        shuffle=False, 
-        num_workers=CONFIG['num_workers'],
-        collate_fn=val_dataset.collate_fn
-    )
-
-    def save_checkpoint(model_save_dir, version, epoch, model, optimizer, CONFIG, train_audio_files, val_audio_files):
+    def save_checkpoint(model_save_dir, version, epoch, model, optimizer, scheduler, CONFIG, train_audio_files, val_audio_files):
         """
         Saves the model checkpoint with the specified version and epoch, including train and validation splits.
 
@@ -149,6 +192,7 @@ def main():
             epoch (int): Current epoch number.
             model (torch.nn.Module): The model to save.
             optimizer (torch.optim.Optimizer): The optimizer to save.
+            scheduler (torch.optim.lr_scheduler): The scheduler to save.
             CONFIG (dict): Configuration dictionary.
             train_audio_files (list): List of training audio filenames.
             val_audio_files (list): List of validation audio filenames.
@@ -159,6 +203,7 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                 'config': CONFIG,
                 'train_audio_files': train_audio_files,
                 'val_audio_files': val_audio_files
@@ -168,7 +213,7 @@ def main():
             print(f"Error saving checkpoint: {e}")
 
     # Training Loop
-    for epoch in range(start_epoch, CONFIG['epochs']):
+    for epoch in range(start_epoch, CONFIG['epochs'] + 1):
         print(f"\n--- Epoch {epoch}/{CONFIG['epochs']} ---")
 
         # Train for one epoch
@@ -186,15 +231,11 @@ def main():
             print(f"            - {key}: {value}")
 
         # Extract metrics safely with default values
-        try:
-            pit_acc = aggregated_debug_metrics.get('pit_acc', 0.0)
-            InstAcc = aggregated_debug_metrics.get('InstAcc', 0.0)
-            R_M_ST = aggregated_debug_metrics.get('R_M_ST', 0.0)
-            R_M_dur = aggregated_debug_metrics.get('R_M_dur', 0.0)
-            R_M_v = aggregated_debug_metrics.get('R_M_v', 0.0)
-        except KeyError as e:
-            print(f"Missing metric in training: {e}")
-            pit_acc = InstAcc = R_M_ST = R_M_dur = R_M_v = 0.0
+        pit_acc = aggregated_debug_metrics.get('pit_acc', 0.0)
+        InstAcc = aggregated_debug_metrics.get('InstAcc', 0.0)
+        R_M_ST = aggregated_debug_metrics.get('R_M_ST', 0.0)
+        R_M_dur = aggregated_debug_metrics.get('R_M_dur', 0.0)
+        R_M_v = aggregated_debug_metrics.get('R_M_v', 0.0)
 
         # Write training metrics to CSV
         try:
@@ -208,14 +249,15 @@ def main():
                     f"{R_M_ST:.4f}", 
                     f"{R_M_dur:.4f}", 
                     f"{R_M_v:.4f}",
-                    batch_failed
+                    batch_failed,
+                    optimizer.param_groups[0]['lr']
                 ])
             print(f"Appended training metrics to {train_metrics_path}")
         except Exception as e:
             print(f"Error writing to training metrics file: {e}")
 
-        # Evaluate on validation set every 5 epochs
-        if (epoch + 1) % 5 == 0:
+        # Evaluate on validation  every 5 epoch
+        def eval():
             avg_val_loss, aggregated_val_metrics, val_batch_failed = evaluate(
                 model, 
                 criterion, 
@@ -227,15 +269,11 @@ def main():
                 print(f"            - {key}: {value}")
 
             # Extract validation metrics safely with default values
-            try:
-                pit_acc_val = aggregated_val_metrics.get('pit_acc', 0.0)
-                InstAcc_val = aggregated_val_metrics.get('InstAcc', 0.0)
-                R_M_ST_val = aggregated_val_metrics.get('R_M_ST', 0.0)
-                R_M_dur_val = aggregated_val_metrics.get('R_M_dur', 0.0)
-                R_M_v_val = aggregated_val_metrics.get('R_M_v', 0.0)
-            except KeyError as e:
-                print(f"Missing metric in validation: {e}")
-                pit_acc_val = InstAcc_val = R_M_ST_val = R_M_dur_val = R_M_v_val = 0.0
+            pit_acc_val = aggregated_val_metrics.get('pit_acc', 0.0)
+            InstAcc_val = aggregated_val_metrics.get('InstAcc', 0.0)
+            R_M_ST_val = aggregated_val_metrics.get('R_M_ST', 0.0)
+            R_M_dur_val = aggregated_val_metrics.get('R_M_dur', 0.0)
+            R_M_v_val = aggregated_val_metrics.get('R_M_v', 0.0)
 
             # Write validation metrics to CSV
             try:
@@ -249,19 +287,39 @@ def main():
                         f"{R_M_ST_val:.4f}", 
                         f"{R_M_dur_val:.4f}",
                         f"{R_M_v_val:.4f}",
-                        val_batch_failed
+                        val_batch_failed,
+                        optimizer.param_groups[0]['lr']
                     ])
                 print(f"Appended evaluation metrics to {eval_metrics_path}")
             except Exception as e:
                 print(f"Error writing to evaluation metrics file: {e}")
+            return avg_val_loss, aggregated_val_metrics, val_batch_failed
 
-            # Save model checkpoint
+        # Update the scheduler
+        if scheduler is not None:
+            if scheduler_type == 'ReduceLROnPlateau':
+                avg_val_loss, _, _ = eval()
+
+                # Use validation loss as metric
+                scheduler.step(avg_val_loss)
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Current learning rate: {current_lr}")
+            else:
+                if epoch % 5 == 0:
+                    avg_val_loss, _, _ = eval()
+                scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f"Current learning rate: {current_lr}")
+
+        # Save model checkpoint
+        if epoch % 5 == 0:
             save_checkpoint(
                 model_save_dir=model_save_dir,
                 version=version,
                 epoch=epoch,
                 model=model,
                 optimizer=optimizer,
+                scheduler=scheduler,
                 CONFIG=CONFIG,
                 train_audio_files=train_audio_files,
                 val_audio_files=val_audio_files
@@ -270,4 +328,14 @@ def main():
     print("\nTraining complete.")
 
 if __name__ == '__main__':
-    main()
+
+    # Get argument containing config file
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, help='config file path', default='config.json')
+    args = parser.parse_args()
+    with open(args.config) as f:
+        CONFIG = dict(json.load(f))
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    CONFIG['device'] = device
+    main(CONFIG)

@@ -6,7 +6,7 @@ from tqdm import tqdm
 # Specify the directory containing .wav files
 wav_directory = "data/train/"  # Replace with your directory path
 wav_directory = "data_2/"  # Replace with your directory path
-
+wav_directory = "/home/waito/program_self/year4/AIST2010GROUP/output"  # Replace with your directory path
 # Initialize lists to store values
 sampling_rates = []
 lengths = []

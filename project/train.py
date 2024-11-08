@@ -98,7 +98,7 @@ def main(CONFIG):
         if scheduler_type == 'StepLR':
             scheduler = optim.lr_scheduler.StepLR(optimizer, **scheduler_params)
         elif scheduler_type == 'ExponentialLR':
-            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, **scheduler_params)
+            scheduler = optim.lr_scheduler.ExponentialLR(optimizer,0.5) #, **scheduler_params)
         elif scheduler_type == 'ReduceLROnPlateau':
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **scheduler_params)
         elif scheduler_type == 'CosineAnnealingLR':
@@ -163,7 +163,7 @@ def main(CONFIG):
         val_loader = DataLoader(
             val_dataset, 
             batch_size=CONFIG['batch_size'], 
-            shuffle=False, 
+            shuffle=True, 
             num_workers=CONFIG['num_workers'],
             collate_fn=val_dataset.collate_fn
         )
@@ -171,14 +171,16 @@ def main(CONFIG):
         train_loader = DataLoader(
             train_dataset, 
             batch_size=CONFIG['batch_size'], 
-            shuffle=False, 
-            num_workers=CONFIG['num_workers']
+            shuffle=True, 
+            num_workers=CONFIG['num_workers'],
+            collate_fn=train_dataset.collate_fn
         )
         val_loader = DataLoader(
             val_dataset, 
             batch_size=CONFIG['batch_size'], 
-            shuffle=False, 
-            num_workers=CONFIG['num_workers']
+            shuffle=True, 
+            num_workers=CONFIG['num_workers'],
+            collate_fn=val_dataset.collate_fn
         )
         
 

@@ -11,7 +11,7 @@ from pydub import AudioSegment
 
 # Configuration
 OUTPUT_DIR = "output"  # Directory to save MIDI, WAV, and CSV files
-DEFAULT_SOUND_FONT_PATH = "Fluid_related/FluidR3_GM.sf2"  # Update this path to your SoundFont
+DEFAULT_SOUND_FONT_PATH = "./Fluid_related/FluidR3_GM.sf2"  # Update this path to your SoundFont
 NUM_FILES_PER_BATCH = 5  # Number of MIDI-WAV-CSV sets to generate per batch
 NUM_BATCHES = 3  # Number of batches to generate for diversity
 
@@ -112,7 +112,7 @@ def generate_random_midi(
     num_notes_range=(20, 50),
     chord_probability=0.3,
     max_notes_per_chord=3,
-    max_wav_length=15
+    max_wav_length=10
 ):
     """
     Generates a random MIDI file with enhanced musical features and logs the note details in a CSV file.

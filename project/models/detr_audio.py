@@ -31,7 +31,7 @@ class DETRAudio(nn.Module):
             if pretrain:
                 self.backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
             else:
-                self.backbone = resnet18(pretrained=False)
+                self.backbone = resnet18(weights=False)
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 512
         elif backbone_type == 'resnet50':
@@ -40,7 +40,7 @@ class DETRAudio(nn.Module):
             if pretrain:
                 self.backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_NO_TOP)
             else:
-                self.backbone = resnet50(pretrained=False)
+                self.backbone = resnet50(weights=False)
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 2048
         elif backbone_type == 'TokenizedBackbone':

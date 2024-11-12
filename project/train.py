@@ -12,6 +12,10 @@ import csv
 from utils.utils import save_tensor_as_png, get_latest_checkpoint
 import json5 as json
 
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+
 def main(CONFIG):
     device = CONFIG['device']
     version = CONFIG.get('version', 'v0')
@@ -57,15 +61,9 @@ def main(CONFIG):
             writer.writerow(header)
         print(f"Created evaluation metrics file at {eval_metrics_path}")
 
-    transforms_config = {
-        "n_fft": CONFIG.get("data_nfft", 4096),
-        "win_length": CONFIG.get("data_win_length", 4096),
-        "hop_length": CONFIG.get("data_hop_length", 256),
-        "power": CONFIG.get("data_power", 2)
-    }
 
-    # Example usage
-    transforms = Spectrogram(**transforms_config)
+
+
 
     # Datasets and DataLoaders
     print("Loading data from directory:", CONFIG['data_dir'])
@@ -114,6 +112,9 @@ def main(CONFIG):
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"current learning rate: {optimizer.param_groups[0]['lr']}")
+        if 'y' in input("Enter new learning rate? (y/n): ").lower() :
+            optimizer.param_groups[0]['lr'] = float(input("Enter new learning rate: "))
         start_epoch = checkpoint['epoch'] + 1
         print(f"Resumed from checkpoint: {latest_checkpoint}, Epoch {checkpoint['epoch']}")
 
@@ -140,17 +141,17 @@ def main(CONFIG):
         train_audio_files, 
         CONFIG['cache_dir'], 
         split='train', 
-        transforms=transforms, 
+
         config=CONFIG,
-        transforms_spec=transforms_config
+
     )
     val_dataset = AudioDataset(
         val_audio_files, 
         CONFIG['cache_dir'], 
         split='val', 
-        transforms=transforms, 
+
         config=CONFIG,
-        transforms_spec=transforms_config
+
     )
     if CONFIG.get('debug', False):
         train_loader = DataLoader(
@@ -312,6 +313,12 @@ def main(CONFIG):
                 scheduler.step()
                 current_lr = optimizer.param_groups[0]['lr']
                 print(f"Current learning rate: {current_lr}")
+        else:
+            if epoch % 5 == 0:
+                avg_val_loss, _, _ = eval()
+
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Current learning rate: {current_lr}")
 
         # Save model checkpoint
         if epoch % 5 == 0:

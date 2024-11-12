@@ -1,4 +1,3 @@
-# utils/dataset.py
 import os
 import torch
 import torchaudio
@@ -7,63 +6,104 @@ from torch.utils.data import Dataset
 from typing import Callable, Optional, Dict, Any
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
+import sqlite3
+import io
+import numpy as np
+import librosa
+
+class CQTTransform:
+    def __init__(self, sample_rate=44100, hop_length=512, n_bins=84, bins_per_octave=12, fmin=None):
+        self.sample_rate = sample_rate
+        self.hop_length = hop_length
+        self.n_bins = n_bins
+        self.bins_per_octave = bins_per_octave
+        self.fmin = fmin or librosa.note_to_hz('C1')  # Default to C1 if fmin is not provided
+        # Precompute frequencies for frequency bin adjustment
+        self.frequencies = librosa.cqt_frequencies(self.n_bins, fmin=self.fmin, bins_per_octave=self.bins_per_octave)
+
+    def __call__(self, waveform):
+        # Convert waveform to numpy array
+        waveform_np = waveform.squeeze().numpy()
+        # If stereo, take the first channel
+        if waveform_np.ndim > 1:
+            waveform_np = waveform_np[0]
+        # Compute CQT using librosa
+        cqt = librosa.cqt(
+            waveform_np,
+            sr=self.sample_rate,
+            hop_length=self.hop_length,
+            n_bins=self.n_bins,
+            bins_per_octave=self.bins_per_octave,
+            fmin=self.fmin
+        )
+        # Take the magnitude
+        cqt_mag = np.abs(cqt)
+        # Convert back to torch tensor and add channel dimension
+        spectrogram = torch.from_numpy(cqt_mag).unsqueeze(0)
+        return spectrogram
+
 class AudioDataset(Dataset):
-    def __init__(self, audiofile, cache_dir, split='train', transforms=None,freq_limit=4200 ,config=None,transforms_spec=None):
+    def __init__(self, audiofile, cache_dir, split='train', transforms=None, freq_limit=4200, config=None):
         self.cache_dir = cache_dir
         self.freq_limit = freq_limit
         os.makedirs(self.cache_dir, exist_ok=True)
-        cache_prefix = ""
+
+        # Build transforms and cache_prefix from config
         if transforms is None:
-            if transforms_spec is None:
-                self.transforms = torchaudio.Spectrogram(n_fft=4096, win_length=4096, hop_length=256, power=2)
-                cache_prefix += "4096_4096_256_2"
+            transforms_config = config.get('transforms', {})
+            transform_type = transforms_config.get('type', 'Spectrogram')
+            transform_params = transforms_config.get('params', {})
+
+            # Create transform based on type
+            if transform_type == 'Spectrogram':
+                self.transforms = torchaudio.transforms.Spectrogram(**transform_params)
+            elif transform_type == 'MelSpectrogram':
+                self.transforms = torchaudio.transforms.MelSpectrogram(**transform_params)
+            elif transform_type == 'CQT':
+                self.transforms = CQTTransform(sample_rate=44100, **transform_params)
             else:
-                self.transforms = transforms_spec
-                for key in transforms_spec.keys():
-                    cache_prefix += f"{key}_{transforms_spec[key]}_"
+                raise ValueError(f"Unsupported transform type: {transform_type}")
+            print(f"------------->Using {transform_type} transform with params: {transform_params}")
+
+            # Build cache_prefix
+            self.cache_prefix = f"{transform_type}_"
+            for key, value in transform_params.items():
+                self.cache_prefix += f"{key}_{value}_"
         else:
             self.transforms = transforms
-            for key in transforms_spec.keys():
-                cache_prefix += f"{key}_{transforms_spec[key]}_"
+            self.cache_prefix = "CustomTransform_"
+
+        # Database setup
+        self.db_path = os.path.join(self.cache_dir, 'spectrogram_cache.db')
+        self.conn = sqlite3.connect(self.db_path)
+        self.cursor = self.conn.cursor()
+        # Create table if it doesn't exist
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS spectrogram_cache (
+                cache_prefix TEXT,
+                audio_filename TEXT,
+                spectrogram BLOB,
+                PRIMARY KEY (cache_prefix, audio_filename)
+            )
+        ''')
+        self.conn.commit()
+
         # Get list of audio files
         self.audio_files = audiofile
-
-        # debug
+        # Apply debug mode
         if config['debug']:
             self.audio_files = self.audio_files[:100]
             print("Debug mode, using only 100 samples")
-        # self.audio_files = self.audio_files[:100]
 
+        self.data_dir = config['data_dir']
         # Initialize lists to hold data in RAM
         self.spectrograms = []
         self.targets = []
-        self.data_dir = config['data_dir']
+
         # Load all data into RAM
         for audio_filename in tqdm(self.audio_files, desc=f"Loading {split} data"):
             audio_path = os.path.join(self.data_dir, audio_filename)
-            cache_path = os.path.join(self.cache_dir, cache_prefix + '_'+ audio_filename.replace('.wav', '.pt'))
-
-            def load_audio(audio_path,cach_path):
-                waveform, sample_rate = torchaudio.load(audio_path)
-                if sample_rate != 44100:
-                    waveform = torchaudio.functional.resample(waveform, sample_rate, 44100)
-                spectrogram = self.transforms(waveform)
-                freq_res = 44100 / self.transforms.n_fft  # Frequency resolution per bin
-                max_bin = int(self.freq_limit / freq_res)
-                spectrogram = spectrogram[:max_bin, :].mean(dim=0).unsqueeze(0)
-                # # print(spectrogram.shape)
-                # assert False
-                torch.save(spectrogram, cache_path)
-                return spectrogram
-
-            # Load or compute spectrogram
-            if os.path.exists(cache_path):
-                try:
-                    spectrogram = torch.load(cache_path,weights_only=True)
-                except:
-                    spectrogram = load_audio(audio_path,cache_path)
-            else:
-                spectrogram = load_audio(audio_path,cache_path)
+            spectrogram = self.load_or_get_spectrogram(audio_filename, audio_path)
 
             # Load labels
             csv_filename = audio_filename.replace('.wav', '.csv')
@@ -78,14 +118,6 @@ class AudioDataset(Dataset):
             # Store in RAM
             self.spectrograms.append(spectrogram)
             self.targets.append(target)
-        # # print one sample to check
-        # print("First sample")
-        # print(self.spectrograms[0].shape)
-        # print(self.targets[0])
-        # # print last sample to check
-        # print("Last sample")
-        # print(self.spectrograms[-1].shape)
-        # print(self.targets[-1])
 
     def __len__(self):
         return len(self.spectrograms)
@@ -94,6 +126,47 @@ class AudioDataset(Dataset):
         spectrogram = self.spectrograms[idx]
         target = self.targets[idx]
         return spectrogram, target
+
+    def load_or_get_spectrogram(self, audio_filename, audio_path):
+        # Check if spectrogram is in cache
+        self.cursor.execute('SELECT spectrogram FROM spectrogram_cache WHERE cache_prefix=? AND audio_filename=?', (self.cache_prefix, audio_filename))
+        result = self.cursor.fetchone()
+        if result is not None:
+            spectrogram_blob = result[0]
+            spectrogram = torch.load(io.BytesIO(spectrogram_blob))
+        else:
+            # Load waveform
+            waveform, sample_rate = torchaudio.load(audio_path)
+            if sample_rate != 44100:
+                waveform = torchaudio.functional.resample(waveform, sample_rate, 44100)
+            spectrogram = self.transforms(waveform)
+
+            # Adjust frequency bins based on freq_limit
+            if isinstance(self.transforms, (torchaudio.transforms.Spectrogram, torchaudio.transforms.MelSpectrogram)):
+                freq_bins = spectrogram.size(1)
+                max_bin = int(self.freq_limit / (44100 / self.transforms.n_fft))
+                max_bin = min(max_bin, freq_bins)
+                spectrogram = spectrogram[:, :max_bin, :]
+            elif isinstance(self.transforms, CQTTransform):
+                frequencies = self.transforms.frequencies
+                indices = np.where(frequencies <= self.freq_limit)[0]
+                if len(indices) > 0:
+                    max_bin = indices[-1] + 1
+                    spectrogram = spectrogram[:, :max_bin, :]
+                else:
+                    # All frequencies are above freq_limit
+                    spectrogram = spectrogram[:, :0, :]
+
+            # Average over channels if needed
+            spectrogram = spectrogram.mean(dim=0).unsqueeze(0)
+
+            # Save spectrogram to cache
+            buffer = io.BytesIO()
+            torch.save(spectrogram, buffer)
+            spectrogram_blob = buffer.getvalue()
+            self.cursor.execute('INSERT INTO spectrogram_cache (cache_prefix, audio_filename, spectrogram) VALUES (?, ?, ?)', (self.cache_prefix, audio_filename, spectrogram_blob))
+            self.conn.commit()
+        return spectrogram
 
     def process_labels(self, df):
         # Convert labels to tensor format suitable for the model
@@ -123,13 +196,12 @@ class AudioDataset(Dataset):
             'Violin',
             'Flute',
             'Electric Guitar (jazz)'
-            # 'Synth Lead',
             # Add more instruments as needed
         ]
         instrument_dict = {instrument: idx + 1 for idx, instrument in enumerate(instruments)}
         # You may need to expand this mapping based on your dataset
         return instrument_dict.get(instrument_name, 0)  # Default to 0 if not found
-    
+
     @staticmethod
     def collate_fn(batch: list) -> Dict[str, Any]:
         """
@@ -166,15 +238,13 @@ class AudioDataset(Dataset):
         for key in label_keys:
             # Collect all tensors for this key
             label_list = [t[key] for t in targets]
-            # print(key)
-
-
             if label_list[0].dim() == 1:
                 # Variable-length sequences, pad them
                 collated_labels[key] = pad_sequence(label_list, batch_first=True, padding_value=0)
             else:
                 # Fixed-size tensors, stack them
                 collated_labels[key] = torch.stack(label_list)
-            # print(collated_labels[key].shape)        
-        return [ padded_spectrograms,  collated_labels]
+        return [padded_spectrograms, collated_labels]
 
+    def __del__(self):
+        self.conn.close()

@@ -1,6 +1,6 @@
 
 venv/
-
+*.png
 Fluid_related/FluidR3_GM.*
 output/
 output/*

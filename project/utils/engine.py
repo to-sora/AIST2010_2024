@@ -53,7 +53,6 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, con
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-
             # Accumulate loss
             total_loss += loss.item() * accum_steps  # Multiply back to get actual loss
 

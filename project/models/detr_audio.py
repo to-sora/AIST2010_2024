@@ -48,6 +48,11 @@ class DETRAudio(nn.Module):
             print("----->","Using TokenizedBackbone")
             self.backbone = TokenizedBackbone(embed_dim=dimension)
             backbone_output_dim = self.backbone.output_dim
+        elif backbone_type == 'CustomTokenizedBackbone':
+            # Custom Tokenized Backbone
+            print("----->","Using CustomTokenizedBackbone")
+            self.backbone = CustomTokenizedBackbone(embed_dim=dimension,CONFIG=config)
+            backbone_output_dim = self.backbone.output_dim
 
         # Input projection to match transformer dimension
         self.input_proj = nn.Conv2d(backbone_output_dim, dimension, kernel_size=1)
@@ -101,7 +106,22 @@ class DETRAudio(nn.Module):
         # Regression head with specified activation function
         regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
         print("----->","Regression activation:", regression_activation_last_layer)
-        self.bbox_embed = MLP(dimension, dimension, 3, 3, regression_activation_last_layer)  # For start_time, duration, velocity
+        #self.bbox_embed = MLP(dimension, dimension, 3, number_of_layers, regression_activation_last_layer,config.get("r_head_scaler",10))  # For start_time, duration, velocity
+        regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
+
+        self.start_time_head = MLP(
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20)
+        )
+        self.duration_head = MLP(
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("duration_scaler", 2)
+        )
+        self.velocity_head = MLP(
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("velocity_scaler", 200)
+        )
+        print("----->","START TIME SCALER:", config.get("start_time_scaler", 20))
+        print("----->","DURATION SCALER:", config.get("duration_scaler", 2))
+        print("----->","VELOCITY SCALER:", config.get("velocity_scaler", 200))
+        print("----->","DETRAudio model initialized")
 
     def forward(self, x):
         # x: [batch_size, 1, freq_bins, time_steps]
@@ -139,7 +159,14 @@ class DETRAudio(nn.Module):
         outputs_note_type = self.class_embed_note_type(hs)
         outputs_instrument = self.class_embed_instrument(hs)
         outputs_pitch = self.class_embed_pitch(hs)
-        outputs_regression = self.bbox_embed(hs)
+        # Regression outputs
+        outputs_start_time = self.start_time_head(hs)
+        outputs_duration = self.duration_head(hs)
+        outputs_velocity = self.velocity_head(hs)
+
+        outputs_regression = torch.cat([outputs_start_time, outputs_duration, outputs_velocity], dim=-1)
+
+
         self.debug = False
         return {
             'pred_note_type': outputs_note_type,
@@ -357,7 +384,7 @@ import torch.nn as nn
 import math
 
 class TwoDPositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_height=2500, max_width=5000):
+    def __init__(self, d_model, max_height=100, max_width=2000):
         """
         Initializes the TwoDPositionalEncoding module.
 
@@ -468,9 +495,10 @@ class StackedLSTM(nn.Module):
 
 class MLP(nn.Module):
     """Simple Multi-Layer Perceptron with configurable last layer activation"""
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, activation_last_layer=None):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, activation_last_layer=None,scaler=1):
         super().__init__()
         layers = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
+        self.scaler = scaler
         for _ in range(num_layers - 2):
             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
         layers.append(nn.Linear(hidden_dim, output_dim))
@@ -483,13 +511,20 @@ class MLP(nn.Module):
                 layers.append(nn.Sigmoid())
             elif activation_last_layer.lower() == 'tanh':
                 layers.append(nn.Tanh())
+                layers.append(AddOne())
             else:
                 raise ValueError(f"Unknown activation function: {activation_last_layer}")
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.mlp(x)
+        return self.mlp(x)*self.scaler
+class AddOne(nn.Module):
+    def __init__(self):
+        super(AddOne, self).__init__()
 
+    def forward(self, x):
+        return x + 1
+    
 class SparseFormer(nn.Module):
     def __init__(self, d_model, num_encoder_layers, num_decoder_layers):
         super(SparseFormer, self).__init__()
@@ -507,3 +542,129 @@ class SparseFormer(nn.Module):
         memory = self.encoder(x)
         output = self.decoder(x, memory)
         return output
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CustomTokenizedBackbone(nn.Module):
+    def __init__(
+        self,
+        input_channels=1,
+        embed_dim=1024,  # Desired embedding dimension
+        time_width=1,
+        freq_bins=2049,  # Number of frequency bins (H)
+        dropout=0.1,
+        CONFIG=None
+    ):
+        """
+        Custom Tokenized Backbone for DETRAudio Model.
+
+        Args:
+            input_channels (int): Number of input channels in the spectrogram.
+            embed_dim (int): Dimension of the output token embeddings.
+            time_width (int): Width of each time window for tokenization.
+            freq_bins (int): Number of frequency bins in the spectrogram (H).
+            dropout (float): Dropout rate for regularization.
+        """
+        super(CustomTokenizedBackbone, self).__init__()
+        self.time_width = time_width
+        self.freq_bins = freq_bins
+        self.embed_dim = embed_dim
+
+        # Step 1: Collapse channels using a learnable weighted mean
+        self.collapse_channels = nn.Conv2d(
+            in_channels=input_channels,
+            out_channels=1,
+            kernel_size=1,
+            bias=False  # No bias to perform a weighted mean
+        )
+
+        # Step 2: Define a convolution layer that maintains the original shape
+        self.patch_conv = nn.Conv2d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=3,
+            padding=1,  # To maintain spatial dimensions
+            bias=False
+        )
+
+        # Step 3: Adaptive pooling to map spatial dimensions to embed_dim
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, embed_dim))
+
+        # Step 4: Dropout for regularization
+        self.dropout = nn.Dropout(dropout)
+
+        # Final output dimension
+        self.output_dim = embed_dim
+
+    def forward(self, x):
+        """
+        Forward pass of the CustomTokenizedBackbone.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, C, H, W).
+
+        Returns:
+            torch.Tensor: Token embeddings of shape (B, embed_dim, 1, W_patches).
+        """
+        B, C, H, W = x.shape
+        # print(f"Input shape: {x.shape}")
+
+        # Step 1: Collapse channels to 1 using a learnable weighted mean
+        x = self.collapse_channels(x)  # Shape: (B, 1, H, W)
+        # print("After collapse_channels:", x.shape)
+
+        # Step 2: Tokenize the width dimension by windowing
+        # Ensure W is divisible by time_width; if not, pad the width dimension
+        if W % self.time_width != 0:
+            pad_size = self.time_width - (W % self.time_width)
+            x = F.pad(x, (0, pad_size))  # Pad the width dimension on the right
+            W += pad_size  # Update W after padding
+            # print(f"Padded width to {W}")
+
+        W_patches = W // self.time_width  # Number of time windows
+        # print(f"W_patches: {W_patches}")
+
+        # Use unfold to create non-overlapping windows along the width dimension
+        # After unfolding: (B, 1, H, W_patches, time_width)
+        x = x.unfold(dimension=3, size=self.time_width, step=self.time_width)
+        # print("After unfold:", x.shape)
+
+        # Rearrange dimensions to (B, W_patches, 1, H, time_width)
+        x = x.permute(0, 3, 1, 2, 4)
+        # print("After permute:", x.shape)
+
+        # Reshape to (B * W_patches, 1, H, time_width) for independent convolution
+        x = x.contiguous().view(B * W_patches, 1, H, self.time_width)
+        # print("After view (B * W_patches, 1, H, time_width):", x.shape)
+
+        # Step 3: Apply independent convolution on each patch
+        x = self.patch_conv(x)  # Shape: (B * W_patches, 1, H, time_width)
+        # print("After patch_conv:", x.shape)
+
+        # Step 4: Apply adaptive pooling to map spatial dimensions to embed_dim
+        x = self.adaptive_pool(x)  # Shape: (B * W_patches, 1, 1, embed_dim)
+        # print("After adaptive_pool:", x.shape)
+
+        # Reshape to (B, W_patches, embed_dim)
+        x = x.view(B, W_patches, self.output_dim)
+        # print("After reshaping to (B, W_patches, embed_dim):", x.shape)
+
+        # Step 5: Apply dropout
+        x = self.dropout(x)
+        # print("After dropout:", x.shape)
+
+        # Step 6: Reshape to (B, embed_dim, 1, W_patches) to match other model dimensions
+        x = x.permute(0, 2, 1).unsqueeze(2)  # Shape: (B, embed_dim, 1, W_patches)
+        # print("Final output shape:", x.shape)
+
+        return x
+
+
+
+
+

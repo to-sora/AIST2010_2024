@@ -11,7 +11,7 @@ project/output/*
 project/output/
 project/models/model_data/*.pth
 project/data/*
-
+project/data4/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

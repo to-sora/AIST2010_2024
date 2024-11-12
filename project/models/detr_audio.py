@@ -99,9 +99,11 @@ class DETRAudio(nn.Module):
         num_classes_pitch = config['num_classes']['pitch'] + 1
 
         # Classification heads with configurable number of layers
-        self.class_embed_note_type = MLP(dimension, dimension, num_classes_note_type, number_of_layers, activation_last_layer)
-        self.class_embed_instrument = MLP(dimension, dimension, num_classes_instrument, number_of_layers, activation_last_layer)
-        self.class_embed_pitch = MLP(dimension, dimension, num_classes_pitch, number_of_layers, activation_last_layer)
+        self.MLP_skip = config["model_structure"].get('MLP_skip', 0)
+        self.debug = config.get('debug', False)
+        self.class_embed_note_type = MLP(dimension, dimension, num_classes_note_type, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
+        self.class_embed_instrument = MLP(dimension, dimension, num_classes_instrument, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
+        self.class_embed_pitch = MLP(dimension, dimension, num_classes_pitch, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
 
         # Regression head with specified activation function
         regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
@@ -110,13 +112,13 @@ class DETRAudio(nn.Module):
         regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
 
         self.start_time_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20)
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20),use_skip=self.MLP_skip,debug=self.debug
         )
         self.duration_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("duration_scaler", 2)
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("duration_scaler", 2),use_skip=self.MLP_skip,debug=self.debug
         )
         self.velocity_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("velocity_scaler", 200)
+            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("velocity_scaler", 200),use_skip=self.MLP_skip,debug=self.debug
         )
         print("----->","START TIME SCALER:", config.get("start_time_scaler", 20))
         print("----->","DURATION SCALER:", config.get("duration_scaler", 2))
@@ -493,31 +495,230 @@ class StackedLSTM(nn.Module):
         output, _ = self.lstm(x)
         return output
 
+# class MLP(nn.Module):
+#     """Simple Multi-Layer Perceptron with configurable last layer activation"""
+#     def __init__(self, input_dim, hidden_dim, output_dim, num_layers, activation_last_layer=None,scaler=1):
+#         super().__init__()
+#         layers = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
+#         self.scaler = scaler
+#         for _ in range(num_layers - 2):
+#             layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
+#         layers.append(nn.Linear(hidden_dim, output_dim))
+#         if not(activation_last_layer == "None"):
+#             if activation_last_layer.lower() == 'relu':
+#                 layers.append(nn.ReLU())
+#             elif activation_last_layer.lower() == 'gelu':
+#                 layers.append(nn.GELU())
+#             elif activation_last_layer.lower() == 'sigmoid':
+#                 layers.append(nn.Sigmoid())
+#             elif activation_last_layer.lower() == 'tanh':
+#                 layers.append(nn.Tanh())
+#                 layers.append(AddOne())
+#             else:
+#                 raise ValueError(f"Unknown activation function: {activation_last_layer}")
+#         self.mlp = nn.Sequential(*layers)
+
+#     def forward(self, x):
+#         return self.mlp(x)*self.scaler
+
+
+
+import torch
+import torch.nn as nn
+import math
+
+class AddOne(nn.Module):
+    """Custom module to add one to the input tensor."""
+    def forward(self, x):
+        return x + 1
+
 class MLP(nn.Module):
-    """Simple Multi-Layer Perceptron with configurable last layer activation"""
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, activation_last_layer=None,scaler=1):
+    """
+    Simple Multi-Layer Perceptron with configurable last layer activation
+    and multiple skip (residual) connections.
+
+    Parameters:
+    - input_dim (int): Dimension of the input features.
+    - hidden_dim (int): Dimension of the hidden layers.
+    - output_dim (int): Dimension of the output layer.
+    - num_layers (int): Total number of Linear layers in the MLP.
+    - activation_last_layer (str or None): Activation function after the last layer.
+    - scaler (float): Scalar to multiply the final output.
+    - use_skip (int): Number of skip (residual) connections to include.
+                      Defaults to 0 (no skip connections).
+    """
+    def __init__(
+        self, 
+        input_dim, 
+        hidden_dim, 
+        output_dim, 
+        num_layers, 
+        activation_last_layer=None, 
+        scaler=1, 
+        use_skip=0,
+        debug=False
+    ):
         super().__init__()
-        layers = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
         self.scaler = scaler
+        self.use_skip = use_skip
+        self.debug = debug
+
+        if num_layers < 2:
+            raise ValueError("num_layers should be at least 2 (input and output layers).")
+
+        # Initialize the layers list
+        layers = []
+        layers.append(nn.Linear(input_dim, hidden_dim))
+        layers.append(nn.ReLU())
+
         for _ in range(num_layers - 2):
-            layers.extend([nn.Linear(hidden_dim, hidden_dim), nn.ReLU()])
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.ReLU())
+
         layers.append(nn.Linear(hidden_dim, output_dim))
-        if not(activation_last_layer == "None"):
-            if activation_last_layer.lower() == 'relu':
+
+        # Add the specified activation function to the last layer, if any
+        if activation_last_layer and activation_last_layer.lower() != 'none':
+            activation = activation_last_layer.lower()
+            if activation == 'relu':
                 layers.append(nn.ReLU())
-            elif activation_last_layer.lower() == 'gelu':
+            elif activation == 'gelu':
                 layers.append(nn.GELU())
-            elif activation_last_layer.lower() == 'sigmoid':
+            elif activation == 'sigmoid':
                 layers.append(nn.Sigmoid())
-            elif activation_last_layer.lower() == 'tanh':
+            elif activation == 'tanh':
                 layers.append(nn.Tanh())
-                layers.append(AddOne())
+                layers.append(AddOne())  # Ensure AddOne is defined
             else:
                 raise ValueError(f"Unknown activation function: {activation_last_layer}")
-        self.mlp = nn.Sequential(*layers)
+
+        self.layers = nn.ModuleList(layers)
+
+        # Define residual connections if use_skip > 0
+        if use_skip > 0:
+            if use_skip > num_layers - 1:
+                raise ValueError(f"use_skip ({use_skip}) cannot exceed num_layers - 1 ({num_layers -1}).")
+
+            # Determine after which layers to add residuals
+            # Evenly distribute skip connections
+            skip_points = self._calculate_skip_points(num_layers, use_skip)
+
+            self.skip_points = skip_points  # List of layer indices after which to add residuals
+            print("MLP ----> Skip points:", skip_points)
+
+            # For each skip point, determine the input index to add
+            # We'll save the input before the segment starts
+            # and add it after the segment ends
+
+            # To handle transformations, we need to define residual transformations
+            # Only if the input dimension to the residual doesn't match output_dim
+            self.residual_transforms = nn.ModuleList()
+            for _ in range(use_skip):
+                # Assuming the input to be added is of dimension hidden_dim
+                # since after the first layer, the dimension is hidden_dim
+                # except possibly for the first residual if input_dim != hidden_dim
+
+                # To generalize, we'll handle residuals based on saved input dimensions
+                # For simplicity, assume residuals are from hidden_dim to hidden_dim
+                # unless it's the first residual from input_dim to hidden_dim
+
+                # You might need to adjust this based on your architecture
+                self.residual_transforms.append(nn.Identity())  # Placeholder
+            # Adjust residual transforms based on actual saved inputs
+            # We'll handle this in the forward pass
+        else:
+            self.skip_points = []
+            self.residual_transforms = None
+
+    def _calculate_skip_points(self, num_layers, use_skip):
+        """
+        Calculate the layer indices after which to add residual connections.
+        Distribute skips as evenly as possible across the layers.
+
+        Returns a list of layer indices.
+        """
+        skip_points = []
+        total_segments = use_skip + 1
+        layers_per_segment = num_layers // total_segments
+        remainder = num_layers % total_segments
+
+        current = 0
+        for i in range(use_skip):
+            # Distribute the remainder across the first few segments
+            increment = layers_per_segment + (1 if i < remainder else 0)
+            current += increment
+            skip_points.append(current * 2 - 1)  # Each Linear and ReLU is a pair
+        return skip_points
 
     def forward(self, x):
-        return self.mlp(x)*self.scaler
+        debug = self.debug
+        if self.use_skip > 0:
+            residuals = []
+            residual_transforms = []
+
+            # Prepare residual connections
+            current_layer = 0
+            residual_idx = 0
+            x_saved = x  # Initial input
+
+            for i, layer in enumerate(self.layers):
+                x = layer(x)
+
+                # Check if the current layer is a skip point
+                if i in self.skip_points:
+                    # Save the current x as residual
+                    residual = x_saved
+                    if debug:
+                        print("saving index at layer {i}")
+
+                    # If input and output dimensions match, use identity
+                    # Else, apply a transformation
+                    if residual.shape[-1] != x.shape[-1]:
+                        # Apply a linear transformation to match dimensions
+                        # Assume residual was saved from a layer with matching dimension
+                        # Here, we use the corresponding residual_transform
+                        residual_transform = self.residual_transforms[residual_idx]
+                        res = residual_transform(residual)
+                    else:
+                        res = residual
+
+                    # Add residual to current x
+                    if debug:
+                        print(f"Adding residual at layer {i}")
+                    x = x + res
+
+                    residual_idx += 1
+
+                    # Save the current x for the next residual
+                    x_saved = x
+            self.debug = False
+            return x * self.scaler
+        else:
+            # No residual connections; standard forward pass
+            for layer in self.layers:
+                x = layer(x)
+            return x * self.scaler
+
+    def _initialize_residual_transforms(self):
+        """
+        Initialize residual transformations based on the skip points.
+        This function should be called after the model is initialized.
+        """
+        for idx in range(len(self.skip_points)):
+            # Determine the dimension of the residual to be added
+            # For simplicity, assume residuals are from input_dim to hidden_dim or hidden_dim to output_dim
+            # You might need to adjust this based on your architecture
+
+            # Example: If residual comes from input layer
+            # Apply a transformation to match hidden_dim
+            # Else, use Identity
+            # Here, we assume all residuals are from hidden_dim to hidden_dim
+            pass  # No action needed since residual_transforms are set to Identity
+
+
+
+
+
 class AddOne(nn.Module):
     def __init__(self):
         super(AddOne, self).__init__()

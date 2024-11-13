@@ -5,12 +5,13 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
 class HungarianMatcher(nn.Module):
-    def __init__(self, cost_note_type=1.0, cost_instrument=1.0, cost_pitch=1.0, cost_regression=1.0):
+    def __init__(self, cost_note_type=1.0, cost_instrument=1.0, cost_pitch=1.0, cost_regression=1.0,use_softmax=False):
         super().__init__()
         self.cost_note_type = cost_note_type
         self.cost_instrument = cost_instrument
         self.cost_pitch = cost_pitch
         self.cost_regression = cost_regression
+        self.use_softmax = use_softmax
         assert cost_note_type != 0 or cost_instrument != 0 or cost_pitch != 0 or cost_regression != 0, "All costs can't be 0"
 
     @torch.no_grad()
@@ -46,15 +47,25 @@ class HungarianMatcher(nn.Module):
             # Compute cost matrices
             # Note Type Cost
             pred_note = outputs['pred_note_type'][b]  # [num_queries, 2]
-            cost_note = -pred_note[:, tgt_note]  # [num_queries, num_targets]
+            # cost_note = -pred_note[:, tgt_note]  # [num_queries, num_targets]
 
             # Instrument Cost
             pred_inst = outputs['pred_instrument'][b]  # [num_queries, 5]
-            cost_inst = -pred_inst[:, tgt_inst]  # [num_queries, num_targets]
+            # cost_inst = -pred_inst[:, tgt_inst]  # [num_queries, num_targets]
 
             # Pitch Cost
             pred_pitch = outputs['pred_pitch'][b]  # [num_queries, 88]
-            cost_pitch = -pred_pitch[:, tgt_pitch]  # [num_queries, num_targets]
+            # cost_pitch = -pred_pitch[:, tgt_pitch]  # [num_queries, num_targets]
+
+            if self.use_softmax:
+
+                cost_note = -F.log_softmax(pred_note, dim=-1)[:, tgt_note]
+                cost_inst = -F.log_softmax(pred_inst, dim=-1)[:, tgt_inst]
+                cost_pitch = -F.log_softmax(pred_pitch, dim=-1)[:, tgt_pitch]
+            else:
+                cost_note = -pred_note[:, tgt_note]
+                cost_inst = -pred_inst[:, tgt_inst]
+                cost_pitch = -pred_pitch[:, tgt_pitch]
 
             # Regression Cost (L1)
             pred_reg = outputs['pred_regression'][b]  # [num_queries, 3]
@@ -94,7 +105,8 @@ class CustomCriterion(nn.Module):
             cost_note_type=cost_note_type, 
             cost_instrument=cost_instrument, 
             cost_pitch=cost_pitch, 
-            cost_regression=cost_regression
+            cost_regression=cost_regression,
+            use_softmax=config.get('loss', {}).get('use_softmax', False)
         )
         
         self.num_note_types = config['num_classes']['note_type']

@@ -93,7 +93,7 @@ class DETRAudio(nn.Module):
 
         # Classification and regression heads
         number_of_layers = config["model_structure"].get('number_of_layers', 2)
-        activation_last_layer = 'sigmoid'  # As per default setting
+        activation_last_layer = config["model_structure"].get('classification_activation_last_layer', 'sigmoid')
         num_classes_note_type = config['num_classes']['note_type'] + 1
         num_classes_instrument = config['num_classes']['instrument'] + 1
         num_classes_pitch = config['num_classes']['pitch'] + 1
@@ -576,12 +576,14 @@ class MLP(nn.Module):
             layers.append(nn.ReLU())
 
         layers.append(nn.Linear(hidden_dim, output_dim))
+        print("MLP ----> using activation_last_layer:", activation_last_layer)
 
         # Add the specified activation function to the last layer, if any
         if activation_last_layer and activation_last_layer.lower() != 'none':
             activation = activation_last_layer.lower()
             if activation == 'relu':
                 layers.append(nn.ReLU())
+
             elif activation == 'gelu':
                 layers.append(nn.GELU())
             elif activation == 'sigmoid':
@@ -589,6 +591,8 @@ class MLP(nn.Module):
             elif activation == 'tanh':
                 layers.append(nn.Tanh())
                 layers.append(AddOne())  # Ensure AddOne is defined
+            elif activation == 'identity' or activation == 'none':
+                pass
             else:
                 raise ValueError(f"Unknown activation function: {activation_last_layer}")
 
@@ -669,7 +673,7 @@ class MLP(nn.Module):
                     # Save the current x as residual
                     residual = x_saved
                     if debug:
-                        print("saving index at layer {i}")
+                        print(f"saving index at layer {i}")
 
                     # If input and output dimensions match, use identity
                     # Else, apply a transformation

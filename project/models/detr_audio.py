@@ -151,10 +151,17 @@ class DETRAudio(nn.Module):
             if self.debug:
                 print("----->","Transformer output shape:", hs.shape)
         else:
-            hs = self.transformer(x)
-            hs = hs[-self.num_queries:]  # Select the last 'num_queries' outputs
+            hs = self.transformer(x)  # (seq_len, batch_size, dimension)
+            
+            # Uniformly sample `num_queries` indices from the sequence
+            seq_len = hs.size(0)
+            num_queries = min(self.num_queries, seq_len)  # Handle cases where num_queries > seq_len
+            # Generate uniformly spaced indices
+            indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)  # (num_queries,)
+            hs = hs[indices]  # (num_queries, batch_size, dimension)
+            
             if self.debug:
-                print("----->","Time series model output shape:", hs.shape)
+                print("-----> Time series model output shape:", hs.shape)
         hs = hs.permute(1, 0, 2)  # [batch_size, num_queries, dimension]
 
         # Classification and regression heads

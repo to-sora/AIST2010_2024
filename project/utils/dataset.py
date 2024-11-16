@@ -180,7 +180,7 @@ class AudioDataset(Dataset):
         labels['instrument'] = torch.tensor(df['Instrument'].apply(self.instrument_to_index).values, dtype=torch.long)
 
         # Adjust Pitch (MIDI note numbers)
-        labels['pitch'] = torch.tensor(df['Pitch'].values - 21, dtype=torch.long)  # Adjusted for piano keys starting from A0 (MIDI 21)
+        labels['pitch'] = torch.tensor(df['Pitch'].values, dtype=torch.long)  # Adjusted for piano keys starting from A0 (MIDI 21)
 
         # Regression targets
         labels['start_time'] = torch.tensor(df['Start_Time'].values, dtype=torch.float32)
@@ -191,6 +191,7 @@ class AudioDataset(Dataset):
 
     def instrument_to_index(self, instrument_name):
         # Map instrument names to indices (assuming mapping is predefined)
+        # TODO: Expand this mapping based on input dir  or config
         instruments = [
             'Acoustic Grand Piano',
             'Violin',

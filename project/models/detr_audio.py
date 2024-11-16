@@ -199,6 +199,36 @@ class DETRAudio(nn.Module):
             # Custom backbone
             x = self.backbone(x)
         return x
+    def freeze_layers(self, freeze_config):
+        """
+        Freezes different layers of the model based on the provided configuration.
+        Args:
+            freeze_config (dict): Dictionary containing boolean values to indicate which parts of the model to freeze.
+        """
+        if freeze_config.get("freeze_backbone", False):
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            print("-----> Backbone layers frozen.")
+
+        if freeze_config.get("freeze_transformer", False):
+            for param in self.transformer.parameters():
+                param.requires_grad = False
+            print("-----> Transformer layers frozen.")
+
+        if freeze_config.get("freeze_heads", False):
+            for param in self.class_embed_note_type.parameters():
+                param.requires_grad = False
+            for param in self.class_embed_instrument.parameters():
+                param.requires_grad = False
+            for param in self.class_embed_pitch.parameters():
+                param.requires_grad = False
+            for param in self.start_time_head.parameters():
+                param.requires_grad = False
+            for param in self.duration_head.parameters():
+                param.requires_grad = False
+            for param in self.velocity_head.parameters():
+                param.requires_grad = False
+            print("-----> MLP heads frozen.")
 
 class SimpleCNN(nn.Module):
     def __init__(self):

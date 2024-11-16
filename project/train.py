@@ -15,6 +15,8 @@ import json5 as json
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
+import sys  # Added for interactivity checks
+import argparse  # Added for command-line arguments
 
 def main(CONFIG):
     device = CONFIG['device']
@@ -36,19 +38,13 @@ def main(CONFIG):
     train_metrics_path = os.path.join(logs_dir, f'{version}_train_metrics.csv')
     eval_metrics_path = os.path.join(logs_dir, f'{version}_eval_metrics.csv')
     config_save_path = os.path.join(logs_dir, f'{version}_config.json')
-    if not os.path.exists(config_save_path):
-        with open(config_save_path, 'w') as f:
-            json.dump(CONFIG, f, indent=4)
-        print(f"Created config file at {config_save_path}")
-
-    # Define the metric keys based on your latest changes
-    metric_keys = ['pit_acc', 'InstAcc', 'R_M_ST', 'R_M_dur', 'R_M_v']
 
     # Initialize CSV files with headers if they don't exist
     if not os.path.exists(train_metrics_path):
         with open(train_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
             # Updated header to include all metric keys
+            metric_keys = ['pit_acc', 'InstAcc', 'R_M_ST', 'R_M_dur', 'R_M_v']
             header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"] + ["lr"]
             writer.writerow(header)
         print(f"Created training metrics file at {train_metrics_path}")
@@ -57,13 +53,16 @@ def main(CONFIG):
         with open(eval_metrics_path, mode='w', newline='') as file:
             writer = csv.writer(file)
             # Updated header to include all metric keys
+            metric_keys = ['pit_acc', 'InstAcc', 'R_M_ST', 'R_M_dur', 'R_M_v']
             header = ['epoch', 'average_loss'] + metric_keys + ["batch_failed"] +["lr"]
             writer.writerow(header)
         print(f"Created evaluation metrics file at {eval_metrics_path}")
 
-
-
-
+    # Save initial CONFIG if not already saved
+    if not os.path.exists(config_save_path):
+        with open(config_save_path, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
+        print(f"Created config file at {config_save_path}")
 
     # Datasets and DataLoaders
     print("Loading data from directory:", CONFIG['data_dir'])
@@ -96,7 +95,7 @@ def main(CONFIG):
         if scheduler_type == 'StepLR':
             scheduler = optim.lr_scheduler.StepLR(optimizer, **scheduler_params)
         elif scheduler_type == 'ExponentialLR':
-            scheduler = optim.lr_scheduler.ExponentialLR(optimizer,0.5) #, **scheduler_params)
+            scheduler = optim.lr_scheduler.ExponentialLR(optimizer, **scheduler_params)
         elif scheduler_type == 'ReduceLROnPlateau':
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, **scheduler_params)
         elif scheduler_type == 'CosineAnnealingLR':
@@ -107,14 +106,28 @@ def main(CONFIG):
     else:
         scheduler = None
 
+    # Initialize freezing configuration
+    freeze_config = {
+        "freeze_backbone": False,
+        "freeze_transformer": False,
+        "freeze_heads": False
+    }
+
     # Optionally resume from a checkpoint
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        print(f"current learning rate: {optimizer.param_groups[0]['lr']}")
-        if 'y' in input("Enter new learning rate? (y/n): ").lower() :
-            optimizer.param_groups[0]['lr'] = float(input("Enter new learning rate: "))
+        print(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
+
+        # Prompt for new learning rate
+        if 'y' in input("Enter new learning rate? (y/n): ").lower():
+            try:
+                new_lr = float(input("Enter new learning rate: "))
+                optimizer.param_groups[0]['lr'] = new_lr
+                print(f"Learning rate updated to {new_lr}")
+            except ValueError:
+                print("Invalid input. Learning rate not changed.")
         start_epoch = checkpoint['epoch'] + 1
         print(f"Resumed from checkpoint: {latest_checkpoint}, Epoch {checkpoint['epoch']}")
 
@@ -127,6 +140,63 @@ def main(CONFIG):
         # Load scheduler state dict
         if 'scheduler_state_dict' in checkpoint and scheduler is not None:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        # Handle freezing layers based on command-line flags and interactivity
+        if any([CONFIG.get('freeze_backbone', False),
+                CONFIG.get('freeze_transformer', False),
+                CONFIG.get('freeze_heads', False),
+                CONFIG.get('freeze_all', False)]):
+            if CONFIG.get('freeze_all', False):
+                freeze_config = {
+                    "freeze_backbone": True,
+                    "freeze_transformer": True,
+                    "freeze_heads": True
+                }
+                print("Freezing all layers as per --freeze_all flag.")
+            else:
+                freeze_config["freeze_backbone"] = CONFIG.get('freeze_backbone', False)
+                freeze_config["freeze_transformer"] = CONFIG.get('freeze_transformer', False)
+                freeze_config["freeze_heads"] = CONFIG.get('freeze_heads', False)
+                print(f"Freezing layers as per flags: {freeze_config}")
+            model.freeze_layers(freeze_config)
+
+            # **Add "log" key to CONFIG with freeze information**
+            CONFIG['log'] = freeze_config
+            # **Save the updated CONFIG with "log"**
+            try:
+                with open(config_save_path, 'w') as f:
+                    json.dump(CONFIG, f, indent=4)
+                print(f"Updated config file with freeze information at {config_save_path}")
+            except Exception as e:
+                print(f"Error updating config file with log: {e}")
+
+        elif not CONFIG.get('no_prompt', False) and sys.stdin.isatty():
+            # Interactive prompting
+            print("Do you want to freeze specific layers of the model?")
+            freeze_backbone = input("Freeze backbone? (y/n): ").strip().lower() == 'y'
+            freeze_transformer = input("Freeze transformer? (y/n): ").strip().lower() == 'y'
+            freeze_heads = input("Freeze heads? (y/n): ").strip().lower() == 'y'
+            freeze_config["freeze_backbone"] = freeze_backbone
+            freeze_config["freeze_transformer"] = freeze_transformer
+            freeze_config["freeze_heads"] = freeze_heads
+            if any(freeze_config.values()):
+                model.freeze_layers(freeze_config)
+                print(f"Applied freezing configuration: {freeze_config}")
+
+                # **Add "log" key to CONFIG with freeze information**
+                CONFIG['log'] = freeze_config
+                # **Save the updated CONFIG with "log"**
+                try:
+                    with open(config_save_path, 'w') as f:
+                        json.dump(CONFIG, f, indent=4)
+                    print(f"Updated config file with freeze information at {config_save_path}")
+                except Exception as e:
+                    print(f"Error updating config file with log: {e}")
+            else:
+                print("No layers were frozen.")
+        else:
+            # Non-interactive and no freezing flags set
+            print("Skipping freezing layers (non-interactive and no freezing flags provided).")
     else:
         start_epoch = 1  # Start from epoch 1 if no checkpoint is found
         print("No checkpoint found. Starting training from scratch.")
@@ -259,7 +329,7 @@ def main(CONFIG):
         except Exception as e:
             print(f"Error writing to training metrics file: {e}")
 
-        # Evaluate on validation  every 5 epoch
+        # Evaluate on validation every 5 epochs
         def eval():
             avg_val_loss, aggregated_val_metrics, val_batch_failed = evaluate(
                 model, 
@@ -320,7 +390,7 @@ def main(CONFIG):
             current_lr = optimizer.param_groups[0]['lr']
             print(f"Current learning rate: {current_lr}")
 
-        # Save model checkpoint
+        # Save model checkpoint every 5 epochs
         if epoch % 5 == 0:
             save_checkpoint(
                 model_save_dir=model_save_dir,
@@ -339,12 +409,27 @@ def main(CONFIG):
 if __name__ == '__main__':
 
     # Get argument containing config file
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, help='config file path', default='config.json')
+    parser = argparse.ArgumentParser(description="Train DETRAudio Model with Optional Freezing of Layers")
+    parser.add_argument('--config', type=str, help='Config file path', default='config.json')
+
+    # Added command-line flags for freezing layers
+    parser.add_argument('--freeze_backbone', action='store_true', help='Freeze the backbone layers.')
+    parser.add_argument('--freeze_transformer', action='store_true', help='Freeze the transformer layers.')
+    parser.add_argument('--freeze_heads', action='store_true', help='Freeze the classification and regression heads.')
+    parser.add_argument('--freeze_all', action='store_true', help='Freeze all layers (backbone, transformer, heads).')
+    parser.add_argument('--no_prompt', action='store_true', help='Do not prompt for freezing layers when resuming training.')
+
     args = parser.parse_args()
     with open(args.config) as f:
         CONFIG = dict(json.load(f))
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     CONFIG['device'] = device
+
+    # Add freeze flags to CONFIG
+    CONFIG['freeze_backbone'] = args.freeze_backbone
+    CONFIG['freeze_transformer'] = args.freeze_transformer
+    CONFIG['freeze_heads'] = args.freeze_heads
+    CONFIG['freeze_all'] = args.freeze_all
+    CONFIG['no_prompt'] = args.no_prompt
+
     main(CONFIG)

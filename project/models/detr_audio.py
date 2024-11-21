@@ -8,25 +8,33 @@ from torchvision.models import resnet50, resnet18, ResNet50_Weights, ResNet18_We
 class DETRAudio(nn.Module):
     def __init__(self, config):
         super(DETRAudio, self).__init__()
-        dimension = config["model_structure"].get("dimension", 128)
+        # Get the base dimension from config
+        base_dimension = config["model_structure"].get("dimension", 128)
         num_encoder_layers = config["model_structure"].get("num_encoder_layers", 1)
         num_decoder_layers = config["model_structure"].get("num_decoder_layers", 1)
         self.num_queries = config['max_objects']
-        self.dimension = dimension
         self.debug = config.get('debug', False)
+        self.log_scale_power = config["model_structure"].get("log_scale_power", False)
         if self.debug:
             print("----->","Debug mode enabled")
 
-        # Backbone selection
+        # Check for 'add_time_dimension' in config
+        self.add_time_dimension = config["model_structure"].get('add_time_dimension', False)
+        if self.add_time_dimension:
+            print("----->","Adding extra time dimension to embedding")
+            dimension = base_dimension + 1  # Increase dimension by 1
+        else:
+            dimension = base_dimension
+        self.dimension = dimension  # Update the model's dimension attribute
+
+        # Backbone selection (unchanged)
         backbone_type = config["model_structure"].get('backbone_type', 'Resnet')
         pretrain = config.get('pretrain', False)
         if backbone_type == 'None':
-            # Simple CNN to match the transformer output size
             print("----->","Using Simple CNN backbone")
             self.backbone = SimpleCNN()
             backbone_output_dim = self.backbone.output_dim
         elif backbone_type == 'resnet18':
-            # Use ResNet backbone
             print("-----> Using ResNet-18 backbone with pretrain:", pretrain)
             if pretrain:
                 self.backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
@@ -35,7 +43,6 @@ class DETRAudio(nn.Module):
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 512
         elif backbone_type == 'resnet50':
-            # Use ResNet backbone
             print("----->","Using ResNet-50 backbone with pretrain:", pretrain)
             if pretrain:
                 self.backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_NO_TOP)
@@ -44,34 +51,31 @@ class DETRAudio(nn.Module):
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 2048
         elif backbone_type == 'TokenizedBackbone':
-            # Other custom backbone
             print("----->","Using TokenizedBackbone")
-            self.backbone = TokenizedBackbone(embed_dim=dimension)
+            self.backbone = TokenizedBackbone(embed_dim=base_dimension)
             backbone_output_dim = self.backbone.output_dim
         elif backbone_type == 'CustomTokenizedBackbone':
-            # Custom Tokenized Backbone
             print("----->","Using CustomTokenizedBackbone")
-            self.backbone = CustomTokenizedBackbone(embed_dim=dimension,CONFIG=config)
+            self.backbone = CustomTokenizedBackbone(embed_dim=base_dimension,CONFIG=config)
             backbone_output_dim = self.backbone.output_dim
 
-        # Input projection to match transformer dimension
-        self.input_proj = nn.Conv2d(backbone_output_dim, dimension, kernel_size=1)
+        # Input projection to match transformer dimension (updated dimension)
+        self.input_proj = nn.Conv2d(backbone_output_dim, base_dimension, kernel_size=1)
 
-        # Positional embedding
+        # Positional embedding (unchanged)
         positional_embedding = config["model_structure"].get('positional_embedding', 'None')
         if positional_embedding == 'sinusoid':
-            # 1D sin-cos positional encoding
             print("----->","Using sinusoidal positional encoding")
-            self.positional_encoding = PositionalEncoding(dimension)
+            self.positional_encoding = PositionalEncoding(base_dimension)
         elif positional_embedding == '2d':
-            # 2D ViT-like positional encoding
             print("----->","Using 2D positional encoding")
-            self.positional_encoding = TwoDPositionalEncoding(dimension)
+            self.positional_encoding = TwoDPositionalEncoding(base_dimension)
         else:
             print("----->","No positional encoding")
             self.positional_encoding = None  # No positional encoding
+        print("----->","Adding time dimension:", self.add_time_dimension)
 
-        # Time series model selection
+        # Time series model selection (unchanged)
         time_series_type = config["model_structure"].get('time_series_type', 'default')
         if time_series_type == 'default':
             print("----->","Using default transformer")
@@ -88,28 +92,25 @@ class DETRAudio(nn.Module):
         else:
             raise ValueError(f"Unknown time_series_type: {time_series_type}")
 
-        # Query embeddings for transformer decoder
+        # Query embeddings for transformer decoder (updated dimension)
         self.query_embed = nn.Embedding(self.num_queries, dimension)
 
-        # Classification and regression heads
+        # Classification and regression heads (updated dimension)
         number_of_layers = config["model_structure"].get('number_of_layers', 2)
         activation_last_layer = config["model_structure"].get('classification_activation_last_layer', 'sigmoid')
         num_classes_note_type = config['num_classes']['note_type'] + 1
         num_classes_instrument = config['num_classes']['instrument'] + 1
         num_classes_pitch = config['num_classes']['pitch'] + 1
 
-        # Classification heads with configurable number of layers
         self.MLP_skip = config["model_structure"].get('MLP_skip', 0)
         self.debug = config.get('debug', False)
         self.class_embed_note_type = MLP(dimension, dimension, num_classes_note_type, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
         self.class_embed_instrument = MLP(dimension, dimension, num_classes_instrument, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
         self.class_embed_pitch = MLP(dimension, dimension, num_classes_pitch, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
 
-        # Regression head with specified activation function
+        # Regression head with specified activation function (unchanged)
         regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
         print("----->","Regression activation:", regression_activation_last_layer)
-        #self.bbox_embed = MLP(dimension, dimension, 3, number_of_layers, regression_activation_last_layer,config.get("r_head_scaler",10))  # For start_time, duration, velocity
-        regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
 
         self.start_time_head = MLP(
             dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20),use_skip=self.MLP_skip,debug=self.debug
@@ -128,6 +129,10 @@ class DETRAudio(nn.Module):
     def forward(self, x):
         # x: [batch_size, 1, freq_bins, time_steps]
         bs = x.size(0)
+        if self.log_scale_power:
+            x = torch.log(torch.abs(x) + 1e-12)
+            if self.debug:
+                print("----->","Log scaling power spectrogram")
         if self.debug:
             print("----->","Input shape:", x.shape)
         x = self.backbone_conv(x)  # Backbone processing
@@ -136,15 +141,29 @@ class DETRAudio(nn.Module):
         x = self.input_proj(x)     # [batch_size, dimension, H, W]
         if self.debug:
             print("----->","Input projection shape:", x.shape)
-        # Flatten spatial dimensions and apply positional encoding if any
+
+        # Positional encoding (unchanged)
         if self.positional_encoding is not None:
             x = self.positional_encoding(x)
         if self.debug:
             print("----->","Positional encoding shape:", x.shape)
+
+        # Flatten spatial dimensions and permute
         x = x.flatten(2).permute(2, 0, 1)  # [seq_len, batch_size, dimension]
         if self.debug:
             print("----->","Flattened shape:", x.shape)
-        # Time series model processing
+
+        # Add time dimension if enabled
+        if self.add_time_dimension:
+            seq_len = x.size(0)
+            # Create a linear interpolation from 0 to 1 across the sequence length
+            time_emb = torch.linspace(0, 1, steps=seq_len, device=x.device).unsqueeze(1).unsqueeze(2)  # [seq_len, 1, 1]
+            time_emb = time_emb.expand(-1, x.size(1), 1)  # [seq_len, batch_size, 1]
+            x = torch.cat([x, time_emb], dim=2)  # Concatenate on embedding dimension
+            if self.debug:
+                print("----->","After adding time dimension, shape:", x.shape)
+
+        # Time series model processing (unchanged)
         if isinstance(self.transformer, nn.Transformer):
             memory = self.transformer.encoder(x)
             hs = self.transformer.decoder(self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1), memory)
@@ -152,19 +171,16 @@ class DETRAudio(nn.Module):
                 print("----->","Transformer output shape:", hs.shape)
         else:
             hs = self.transformer(x)  # (seq_len, batch_size, dimension)
-            
             # Uniformly sample `num_queries` indices from the sequence
             seq_len = hs.size(0)
-            num_queries = min(self.num_queries, seq_len)  # Handle cases where num_queries > seq_len
-            # Generate uniformly spaced indices
-            indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)  # (num_queries,)
+            num_queries = min(self.num_queries, seq_len)
+            indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)
             hs = hs[indices]  # (num_queries, batch_size, dimension)
-            
             if self.debug:
                 print("-----> Time series model output shape:", hs.shape)
         hs = hs.permute(1, 0, 2)  # [batch_size, num_queries, dimension]
 
-        # Classification and regression heads
+        # Classification and regression heads (unchanged)
         outputs_note_type = self.class_embed_note_type(hs)
         outputs_instrument = self.class_embed_instrument(hs)
         outputs_pitch = self.class_embed_pitch(hs)
@@ -174,7 +190,6 @@ class DETRAudio(nn.Module):
         outputs_velocity = self.velocity_head(hs)
 
         outputs_regression = torch.cat([outputs_start_time, outputs_duration, outputs_velocity], dim=-1)
-
 
         self.debug = False
         return {
@@ -199,12 +214,9 @@ class DETRAudio(nn.Module):
             # Custom backbone
             x = self.backbone(x)
         return x
+
     def freeze_layers(self, freeze_config):
-        """
-        Freezes different layers of the model based on the provided configuration.
-        Args:
-            freeze_config (dict): Dictionary containing boolean values to indicate which parts of the model to freeze.
-        """
+        # Freezing layers (unchanged)
         if freeze_config.get("freeze_backbone", False):
             for param in self.backbone.parameters():
                 param.requires_grad = False
@@ -361,7 +373,10 @@ class PositionalEncoding(nn.Module):
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # [max_len, 1]
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))  # [d_model/2]
         pe[:, 0::2] = torch.sin(position * div_term)  # Even indices
-        pe[:, 1::2] = torch.cos(position * div_term)  # Odd indices
+        if d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:pe[:, 1::2].size(1)])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)     
         pe = pe.unsqueeze(1)  # [max_len, 1, d_model]
         self.register_buffer('pe', pe)  # Register as buffer to avoid being considered as a model parameter
         self.dimension = d_model

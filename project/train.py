@@ -21,6 +21,7 @@ import argparse  # Added for command-line arguments
 def main(CONFIG):
     device = CONFIG['device']
     version = CONFIG.get('version', 'v0')
+    save_by_spoch = CONFIG.get('save_by_spoch', 1)
 
     # Set seed for reproducibility if defined in config debug
     if CONFIG.get('debug', True):
@@ -378,20 +379,20 @@ def main(CONFIG):
                 current_lr = optimizer.param_groups[0]['lr']
                 print(f"Current learning rate: {current_lr}")
             else:
-                if epoch % 5 == 0:
+                if epoch % save_by_spoch == 0:
                     avg_val_loss, _, _ = eval()
                 scheduler.step()
                 current_lr = optimizer.param_groups[0]['lr']
                 print(f"Current learning rate: {current_lr}")
         else:
-            if epoch % 5 == 0:
+            if epoch % save_by_spoch  == 0:
                 avg_val_loss, _, _ = eval()
 
             current_lr = optimizer.param_groups[0]['lr']
             print(f"Current learning rate: {current_lr}")
 
         # Save model checkpoint every 5 epochs
-        if epoch % 5 == 0:
+        if epoch % save_by_spoch  == 0:
             save_checkpoint(
                 model_save_dir=model_save_dir,
                 version=version,

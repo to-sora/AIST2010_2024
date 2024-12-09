@@ -8,6 +8,9 @@ from torchvision.models import resnet50, resnet18, ResNet50_Weights, ResNet18_We
 class DETRAudio(nn.Module):
     def __init__(self, config):
         super(DETRAudio, self).__init__()
+        # New key for model structure version
+        self.model_struct_ver = config["model_structure"].get("model_struct_ver", "mv1")
+
         # Get the base dimension from config
         base_dimension = config["model_structure"].get("dimension", 128)
         num_encoder_layers = config["model_structure"].get("num_encoder_layers", 1)
@@ -31,11 +34,9 @@ class DETRAudio(nn.Module):
         backbone_type = config["model_structure"].get('backbone_type', 'Resnet')
         pretrain = config.get('pretrain', False)
         if backbone_type == 'None':
-            print("----->","Using Simple CNN backbone")
             self.backbone = SimpleCNN()
             backbone_output_dim = self.backbone.output_dim
         elif backbone_type == 'resnet18':
-            print("-----> Using ResNet-18 backbone with pretrain:", pretrain)
             if pretrain:
                 self.backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
             else:
@@ -43,7 +44,6 @@ class DETRAudio(nn.Module):
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 512
         elif backbone_type == 'resnet50':
-            print("----->","Using ResNet-50 backbone with pretrain:", pretrain)
             if pretrain:
                 self.backbone = resnet50(weights=ResNet50_Weights.IMAGENET1K_NO_TOP)
             else:
@@ -51,51 +51,58 @@ class DETRAudio(nn.Module):
             self.backbone.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
             backbone_output_dim = 2048
         elif backbone_type == 'TokenizedBackbone':
-            print("----->","Using TokenizedBackbone")
             self.backbone = TokenizedBackbone(embed_dim=base_dimension)
             backbone_output_dim = self.backbone.output_dim
         elif backbone_type == 'CustomTokenizedBackbone':
-            print("----->","Using CustomTokenizedBackbone")
-            self.backbone = CustomTokenizedBackbone(embed_dim=base_dimension,CONFIG=config)
+            self.backbone = CustomTokenizedBackbone(embed_dim=base_dimension, CONFIG=config)
             backbone_output_dim = self.backbone.output_dim
 
-        # Input projection to match transformer dimension (updated dimension)
+        # Input projection
         self.input_proj = nn.Conv2d(backbone_output_dim, base_dimension, kernel_size=1)
 
-        # Positional embedding (unchanged)
+        # Positional encoding
         positional_embedding = config["model_structure"].get('positional_embedding', 'None')
         if positional_embedding == 'sinusoid':
-            print("----->","Using sinusoidal positional encoding")
             self.positional_encoding = PositionalEncoding(base_dimension)
         elif positional_embedding == '2d':
-            print("----->","Using 2D positional encoding")
             self.positional_encoding = TwoDPositionalEncoding(base_dimension)
         else:
-            print("----->","No positional encoding")
-            self.positional_encoding = None  # No positional encoding
+            self.positional_encoding = None
         print("----->","Adding time dimension:", self.add_time_dimension)
 
-        # Time series model selection (unchanged)
+        # Time series model selection
         time_series_type = config["model_structure"].get('time_series_type', 'default')
-        if time_series_type == 'default':
-            print("----->","Using default transformer")
-            self.transformer = nn.Transformer(d_model=dimension, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers)
-        elif time_series_type == 'SparseFormer':
-            print("----->","Using SparseFormer")
-            self.transformer = SparseFormer(d_model=dimension, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers)
-        elif time_series_type == 'RNN':
-            print("----->","Using RNN")
-            self.transformer = StackedRNN(d_model=dimension, num_layers=num_encoder_layers)
-        elif time_series_type == 'LSTM':
-            print("----->","Using LSTM")
-            self.transformer = StackedLSTM(d_model=dimension, num_layers=num_encoder_layers)
+
+        def build_transformer(d_model, num_encoder_layers, num_decoder_layers, tstype):
+            if tstype == 'default':
+                return nn.Transformer(d_model=d_model, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers)
+            elif tstype == 'SparseFormer':
+                return SparseFormer(d_model=d_model, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers)
+            elif tstype == 'RNN':
+                return StackedRNN(d_model=d_model, num_layers=num_encoder_layers)
+            elif tstype == 'LSTM':
+                return StackedLSTM(d_model=d_model, num_layers=num_encoder_layers)
+            else:
+                raise ValueError(f"Unknown time_series_type: {tstype}")
+
+        # If model_struct_ver is mv1 or not defined, use single transformer for both tasks
+        # If model_struct_ver is mv2, use two separate transformers: one for classification, one for regression
+        if self.model_struct_ver in ["mv1", "ver1"]:
+            print("-----> Using single transformer (mv1) version")
+            self.transformer = build_transformer(dimension, num_encoder_layers, num_decoder_layers, time_series_type)
+            self.transformer_reg = None
         else:
-            raise ValueError(f"Unknown time_series_type: {time_series_type}")
+            print("-----> Using double transformer (mv2) version")
+            self.transformer = build_transformer(dimension, num_encoder_layers, num_decoder_layers, time_series_type)
+            self.transformer_reg = build_transformer(dimension, num_encoder_layers, num_decoder_layers, time_series_type)
 
-        # Query embeddings for transformer decoder (updated dimension)
+        # Query embeddings
         self.query_embed = nn.Embedding(self.num_queries, dimension)
+        # Additional query embed for regression if mv2
+        if self.model_struct_ver not in ["mv1", "ver1"]:
+            self.query_embed_reg = nn.Embedding(self.num_queries, dimension)
 
-        # Classification and regression heads (updated dimension)
+        # Classification and regression heads
         number_of_layers = config["model_structure"].get('number_of_layers', 2)
         activation_last_layer = config["model_structure"].get('classification_activation_last_layer', 'sigmoid')
         num_classes_note_type = config['num_classes']['note_type'] + 1
@@ -104,93 +111,89 @@ class DETRAudio(nn.Module):
 
         self.MLP_skip = config["model_structure"].get('MLP_skip', 0)
         self.debug = config.get('debug', False)
+
         self.class_embed_note_type = MLP(dimension, dimension, num_classes_note_type, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
         self.class_embed_instrument = MLP(dimension, dimension, num_classes_instrument, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
         self.class_embed_pitch = MLP(dimension, dimension, num_classes_pitch, number_of_layers, activation_last_layer,use_skip=self.MLP_skip,debug=self.debug)
 
-        # Regression head with specified activation function (unchanged)
         regression_activation_last_layer = config["model_structure"].get('regression_activation_last_layer', 'relu')
-        print("----->","Regression activation:", regression_activation_last_layer)
 
-        self.start_time_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20),use_skip=self.MLP_skip,debug=self.debug
-        )
-        self.duration_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("duration_scaler", 2),use_skip=self.MLP_skip,debug=self.debug
-        )
-        self.velocity_head = MLP(
-            dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("velocity_scaler", 200),use_skip=self.MLP_skip,debug=self.debug
-        )
-        print("----->","START TIME SCALER:", config.get("start_time_scaler", 20))
-        print("----->","DURATION SCALER:", config.get("duration_scaler", 2))
-        print("----->","VELOCITY SCALER:", config.get("velocity_scaler", 200))
-        print("----->","DETRAudio model initialized")
+        self.start_time_head = MLP(dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("start_time_scaler", 20),use_skip=self.MLP_skip,debug=self.debug)
+        self.duration_head = MLP(dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("duration_scaler", 2),use_skip=self.MLP_skip,debug=self.debug)
+        self.velocity_head = MLP(dimension, dimension, 1, number_of_layers, regression_activation_last_layer, config.get("velocity_scaler", 200),use_skip=self.MLP_skip,debug=self.debug)
+
+        print("-----> DETRAudio model initialized")
 
     def forward(self, x):
-        # x: [batch_size, 1, freq_bins, time_steps]
         bs = x.size(0)
         if self.log_scale_power:
             x = torch.log(torch.abs(x) + 1e-12)
-            if self.debug:
-                print("----->","Log scaling power spectrogram")
-        if self.debug:
-            print("----->","Input shape:", x.shape)
-        x = self.backbone_conv(x)  # Backbone processing
-        if self.debug:
-            print("----->","Backbone output shape:", x.shape)
-        x = self.input_proj(x)     # [batch_size, dimension, H, W]
-        if self.debug:
-            print("----->","Input projection shape:", x.shape)
+        x = self.backbone_conv(x)
+        x = self.input_proj(x)
 
-        # Positional encoding (unchanged)
         if self.positional_encoding is not None:
             x = self.positional_encoding(x)
-        if self.debug:
-            print("----->","Positional encoding shape:", x.shape)
 
-        # Flatten spatial dimensions and permute
-        x = x.flatten(2).permute(2, 0, 1)  # [seq_len, batch_size, dimension]
-        if self.debug:
-            print("----->","Flattened shape:", x.shape)
+        x = x.flatten(2).permute(2, 0, 1)
 
-        # Add time dimension if enabled
         if self.add_time_dimension:
             seq_len = x.size(0)
-            # Create a linear interpolation from 0 to 1 across the sequence length
-            time_emb = torch.linspace(0, 1, steps=seq_len, device=x.device).unsqueeze(1).unsqueeze(2)  # [seq_len, 1, 1]
-            time_emb = time_emb.expand(-1, x.size(1), 1)  # [seq_len, batch_size, 1]
-            x = torch.cat([x, time_emb], dim=2)  # Concatenate on embedding dimension
-            if self.debug:
-                print("----->","After adding time dimension, shape:", x.shape)
+            time_emb = torch.linspace(0, 1, steps=seq_len, device=x.device).unsqueeze(1).unsqueeze(2)
+            time_emb = time_emb.expand(-1, x.size(1), 1)
+            x = torch.cat([x, time_emb], dim=2)
 
-        # Time series model processing (unchanged)
-        if isinstance(self.transformer, nn.Transformer):
-            memory = self.transformer.encoder(x)
-            hs = self.transformer.decoder(self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1), memory)
-            if self.debug:
-                print("----->","Transformer output shape:", hs.shape)
+        # If model_struct_ver is mv2, use two separate transformers
+        if self.model_struct_ver in ["mv1", "ver1"]:
+            # Single transformer for both classification and regression
+            if isinstance(self.transformer, nn.Transformer):
+                memory = self.transformer.encoder(x)
+                hs = self.transformer.decoder(self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1), memory)
+            else:
+                hs = self.transformer(x)
+                seq_len = hs.size(0)
+                num_queries = min(self.num_queries, seq_len)
+                indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)
+                hs = hs[indices]
+            hs_reg = hs
+            hs_clf = hs
         else:
-            hs = self.transformer(x)  # (seq_len, batch_size, dimension)
-            # Uniformly sample `num_queries` indices from the sequence
-            seq_len = hs.size(0)
-            num_queries = min(self.num_queries, seq_len)
-            indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)
-            hs = hs[indices]  # (num_queries, batch_size, dimension)
-            if self.debug:
-                print("-----> Time series model output shape:", hs.shape)
-        hs = hs.permute(1, 0, 2)  # [batch_size, num_queries, dimension]
+            # Two transformers: one for classification, one for regression
+            # Classification transformer
+            if isinstance(self.transformer, nn.Transformer):
+                memory_clf = self.transformer.encoder(x)
+                hs_clf = self.transformer.decoder(self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1), memory_clf)
+            else:
+                hs_clf = self.transformer(x)
+                seq_len = hs_clf.size(0)
+                num_queries = min(self.num_queries, seq_len)
+                indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)
+                hs_clf = hs_clf[indices]
 
-        # Classification and regression heads (unchanged)
-        outputs_note_type = self.class_embed_note_type(hs)
-        outputs_instrument = self.class_embed_instrument(hs)
-        outputs_pitch = self.class_embed_pitch(hs)
-        # Regression outputs
-        outputs_start_time = self.start_time_head(hs)
-        outputs_duration = self.duration_head(hs)
-        outputs_velocity = self.velocity_head(hs)
+            # Regression transformer
+            if isinstance(self.transformer_reg, nn.Transformer):
+                memory_reg = self.transformer_reg.encoder(x)
+                hs_reg = self.transformer_reg.decoder(self.query_embed_reg.weight.unsqueeze(1).repeat(1, bs, 1), memory_reg)
+            else:
+                hs_reg = self.transformer_reg(x)
+                seq_len = hs_reg.size(0)
+                num_queries = min(self.num_queries, seq_len)
+                indices = torch.linspace(0, seq_len - 1, steps=num_queries).long().to(x.device)
+                hs_reg = hs_reg[indices]
+
+        hs_clf = hs_clf.permute(1, 0, 2)
+        hs_reg = hs_reg.permute(1, 0, 2)
+
+        # Classification heads on hs_clf
+        outputs_note_type = self.class_embed_note_type(hs_clf)
+        outputs_instrument = self.class_embed_instrument(hs_clf)
+        outputs_pitch = self.class_embed_pitch(hs_clf)
+
+        # Regression heads on hs_reg
+        outputs_start_time = self.start_time_head(hs_reg)
+        outputs_duration = self.duration_head(hs_reg)
+        outputs_velocity = self.velocity_head(hs_reg)
 
         outputs_regression = torch.cat([outputs_start_time, outputs_duration, outputs_velocity], dim=-1)
-
         self.debug = False
         return {
             'pred_note_type': outputs_note_type,
@@ -198,7 +201,6 @@ class DETRAudio(nn.Module):
             'pred_pitch': outputs_pitch,
             'pred_regression': outputs_regression
         }
-
     def backbone_conv(self, x):
         if hasattr(self.backbone, 'conv1'):
             # ResNet backbone
@@ -215,32 +217,6 @@ class DETRAudio(nn.Module):
             x = self.backbone(x)
         return x
 
-    def freeze_layers(self, freeze_config):
-        # Freezing layers (unchanged)
-        if freeze_config.get("freeze_backbone", False):
-            for param in self.backbone.parameters():
-                param.requires_grad = False
-            print("-----> Backbone layers frozen.")
-
-        if freeze_config.get("freeze_transformer", False):
-            for param in self.transformer.parameters():
-                param.requires_grad = False
-            print("-----> Transformer layers frozen.")
-
-        if freeze_config.get("freeze_heads", False):
-            for param in self.class_embed_note_type.parameters():
-                param.requires_grad = False
-            for param in self.class_embed_instrument.parameters():
-                param.requires_grad = False
-            for param in self.class_embed_pitch.parameters():
-                param.requires_grad = False
-            for param in self.start_time_head.parameters():
-                param.requires_grad = False
-            for param in self.duration_head.parameters():
-                param.requires_grad = False
-            for param in self.velocity_head.parameters():
-                param.requires_grad = False
-            print("-----> MLP heads frozen.")
 
 class SimpleCNN(nn.Module):
     def __init__(self):

@@ -1,0 +1,80 @@
+{
+    "version": "v40",
+    "data_dir": "./data4/",
+    "cache_dir": "./data/cache/",
+    "logs_dir": "./logs/",
+    "batch_size": 10,
+    "num_workers": 2,
+    "lr": 0.0001,
+    //"scheduler_type": none , //,"ExponentialLR", // "ReduceLROnPlateau",
+    "scheduler_params": {
+        "mode": "min",
+        "factor": 0.5,
+        "patience": 5
+    },
+    "weight_decay": 1e-4,
+    "debug" : false,
+    "epochs": 200,
+    "gradient_accumulation_steps": 4,
+    "model_save_path": "./models/model_data",
+    "num_classes": {
+        "note_type": 2,
+        "instrument": 5,
+        "pitch": 128
+    },
+    "model_structure": {
+        "model_struct_ver" : "mv2",
+        "dimension": 255,
+        "num_encoder_layers": 2,
+        "log_scale_power":true,
+        "num_decoder_layers": 2,
+        "backbone_type": "CustomTokenizedBackbone", //"CustomTokenizedBackbone" , //"resnet18" , // "None",//"TokenizedBackbone",//"resnet50", //"None",  // "resnet18" resnet50
+        "pretrain": false,
+        "positional_embedding": "sinusoid", // "None", // "sinusoidal"
+        "time_series_type": "default", //"LSTM" ,  // "RNN" ,// "SparseFormer" ,//"default",
+        "number_of_layers" :7 ,
+        "regression_activation_last_layer": "relu",//"sigmoid"//,"None"
+        "classification_activation_last_layer": "None",
+        "MLP_skip": 3,
+        "add_time_dimension": true
+    },
+    "max_objects": 80,
+    "cost_note_type": 1,
+    "cost_instrument": 1,
+    "cost_pitch": 1,
+    "cost_regression": 1,
+    "start_time_scaler":1,
+    "duration_scaler":1,
+    "velocity_scaler": 1,
+    "save_by_spoch":1,
+    "output_normalize": true,
+    // "data_nftt": 4096,
+    // "data_win_length": 4096,
+    // "data_hop_length": 256,
+    // "data_power": 2,
+    "transforms": {
+        "type": "CQT",
+        "params": {
+       
+            "hop_length": 64,     //  # Smaller hop length for higher time resolution
+            "n_bins": 240,          // # Increased bins to fully capture pitch nuances in MIDI range
+            "bins_per_octave": 48,  // # Increased bins per octave for even finer frequency resolution
+            "fmin": 27.5     
+        }
+    },
+    "loss" : {
+        "use_softmax": true
+
+    }
+    // "transforms": {
+    //     "type": "MelSpectrogram",
+    //     "params": {
+    //         "sample_rate": 44100,
+    //         "n_fft": 2048,
+    //         "win_length": 2048,
+    //         "hop_length": 512,
+    //         "n_mels": 128,
+    //         "power": 2.0
+    //     }
+    // }
+}

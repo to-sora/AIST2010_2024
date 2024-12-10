@@ -1,9 +1,9 @@
 {
-    "version": "v40",
+    "version": "v41",
     "data_dir": "./data4/",
     "cache_dir": "./data/cache/",
     "logs_dir": "./logs/",
-    "batch_size": 10,
+    "batch_size": 5,
     "num_workers": 2,
     "lr": 0.0001,
     //"scheduler_type": none , //,"ExponentialLR", // "ReduceLROnPlateau",
@@ -15,7 +15,7 @@
     "weight_decay": 1e-4,
     "debug" : false,
     "epochs": 200,
-    "gradient_accumulation_steps": 4,
+    "gradient_accumulation_steps": 8,
     "model_save_path": "./models/model_data",
     "num_classes": {
         "note_type": 2,
@@ -24,9 +24,9 @@
     },
     "model_structure": {
         "model_struct_ver" : "mv2",
-        "dimension": 255,
+        "dimension": 1023,
         "num_encoder_layers": 2,
-        "log_scale_power":true,
+        "log_scale_power": false,
         "num_decoder_layers": 2,
         "backbone_type": "CustomTokenizedBackbone", //"CustomTokenizedBackbone" , //"resnet18" , // "None",//"TokenizedBackbone",//"resnet50", //"None",  // "resnet18" resnet50
         "pretrain": false,

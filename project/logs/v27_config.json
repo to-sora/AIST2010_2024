@@ -1,11 +1,11 @@
 {
-    "version": "v42",
+    "version": "v27",
     "data_dir": "./data4/",
     "cache_dir": "./data/cache/",
     "logs_dir": "./logs/",
-    "batch_size": 5,
+    "batch_size": 20,
     "num_workers": 2,
-    "lr": 0.0001,
+    "lr": 1e-4,
     //"scheduler_type": none , //,"ExponentialLR", // "ReduceLROnPlateau",
     "scheduler_params": {
         "mode": "min",
@@ -15,7 +15,7 @@
     "weight_decay": 1e-4,
     "debug" : false,
     "epochs": 200,
-    "gradient_accumulation_steps": 8,
+    "gradient_accumulation_steps": 512,
     "model_save_path": "./models/model_data",
     "num_classes": {
         "note_type": 2,
@@ -23,31 +23,26 @@
         "pitch": 128
     },
     "model_structure": {
-        "model_struct_ver" : "mv2",
-        "dimension": 511,
+        "dimension": 256,
         "num_encoder_layers": 1,
-        "log_scale_power": false,
         "num_decoder_layers": 1,
-        "backbone_type": "CustomTokenizedBackbone", //"CustomTokenizedBackbone" , //"resnet18" , // "None",//"TokenizedBackbone",//"resnet50", //"None",  // "resnet18" resnet50
+        "backbone_type": "resnet18",//"CustomTokenizedBackbone", //"CustomTokenizedBackbone" , //"resnet18" , // "None",//"TokenizedBackbone",//"resnet50", //"None",  // "resnet18" resnet50
         "pretrain": false,
-        "positional_embedding": "sinusoid", // "None", // "sinusoidal"
-        "time_series_type": "default", //"LSTM" ,  // "RNN" ,// "SparseFormer" ,//"default",
-        "number_of_layers" :13 ,
+        "positional_embedding":"2d",// "sinusoid", // "None", // "sinusoidal"
+        "time_series_type": "LSTM",//"LSTM" ,  // "RNN" ,// "SparseFormer" ,//"default",
+        "number_of_layers" :7 ,
         "regression_activation_last_layer": "relu",//"sigmoid"//,"None"
         "classification_activation_last_layer": "None",
-        "MLP_skip": 3,
-        "add_time_dimension": true
+        "MLP_skip": 3
     },
-    "max_objects": 80,
-    "cost_note_type": 0.1,
-    "cost_instrument": 0.1,
+    "max_objects": 150,
+    "cost_note_type": 1,
+    "cost_instrument": 1,
     "cost_pitch": 1,
     "cost_regression": 1,
     "start_time_scaler":1,
     "duration_scaler":1,
     "velocity_scaler": 1,
-    "save_by_spoch":1,
-    "output_normalize": true,
     // "data_nftt": 4096,
     // "data_win_length": 4096,
     // "data_hop_length": 256,
@@ -56,9 +51,9 @@
         "type": "CQT",
         "params": {
        
-            "hop_length": 64,     //  # Smaller hop length for higher time resolution
-            "n_bins": 240,          // # Increased bins to fully capture pitch nuances in MIDI range
-            "bins_per_octave": 48,  // # Increased bins per octave for even finer frequency resolution
+            "hop_length": 128,     //  # Smaller hop length for higher time resolution
+            "n_bins": 192,          // # Increased bins to fully capture pitch nuances in MIDI range
+            "bins_per_octave": 36,  // # Increased bins per octave for even finer frequency resolution
             "fmin": 27.5     
         }
     },

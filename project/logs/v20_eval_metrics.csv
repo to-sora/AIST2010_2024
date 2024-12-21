@@ -1,0 +1,2 @@
+epoch,average_loss,pit_acc,InstAcc,R_M_ST,R_M_dur,R_M_v,batch_failed,lr
+5,2.5777,0.0000,0.0000,9.5867,0.1743,3820.4143,0,0.0001

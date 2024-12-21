@@ -1,0 +1,92 @@
+DETRAudio(
+  (backbone): CustomTokenizedBackbone(
+    (collapse_channels): Conv2d(1, 1, kernel_size=(1, 1), stride=(1, 1), bias=False)
+    (patch_conv): Conv2d(1, 1, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    (adaptive_pool): AdaptiveAvgPool2d(output_size=(1, 1024))
+    (dropout): Dropout(p=0.1, inplace=False)
+  )
+  (input_proj): Conv2d(1024, 1024, kernel_size=(1, 1), stride=(1, 1))
+  (positional_encoding): PositionalEncoding()
+  (transformer): Transformer(
+    (encoder): TransformerEncoder(
+      (layers): ModuleList(
+        (0-5): 6 x TransformerEncoderLayer(
+          (self_attn): MultiheadAttention(
+            (out_proj): NonDynamicallyQuantizableLinear(in_features=1024, out_features=1024, bias=True)
+          )
+          (linear1): Linear(in_features=1024, out_features=2048, bias=True)
+          (dropout): Dropout(p=0.1, inplace=False)
+          (linear2): Linear(in_features=2048, out_features=1024, bias=True)
+          (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+          (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+          (dropout1): Dropout(p=0.1, inplace=False)
+          (dropout2): Dropout(p=0.1, inplace=False)
+        )
+      )
+      (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+    )
+    (decoder): TransformerDecoder(
+      (layers): ModuleList(
+        (0-3): 4 x TransformerDecoderLayer(
+          (self_attn): MultiheadAttention(
+            (out_proj): NonDynamicallyQuantizableLinear(in_features=1024, out_features=1024, bias=True)
+          )
+          (multihead_attn): MultiheadAttention(
+            (out_proj): NonDynamicallyQuantizableLinear(in_features=1024, out_features=1024, bias=True)
+          )
+          (linear1): Linear(in_features=1024, out_features=2048, bias=True)
+          (dropout): Dropout(p=0.1, inplace=False)
+          (linear2): Linear(in_features=2048, out_features=1024, bias=True)
+          (norm1): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+          (norm2): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+          (norm3): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+          (dropout1): Dropout(p=0.1, inplace=False)
+          (dropout2): Dropout(p=0.1, inplace=False)
+          (dropout3): Dropout(p=0.1, inplace=False)
+        )
+      )
+      (norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+    )
+  )
+  (query_embed): Embedding(150, 1024)
+  (class_embed_note_type): MLP(
+    (mlp): Sequential(
+      (0): Linear(in_features=1024, out_features=1024, bias=True)
+      (1): ReLU()
+      (2): Linear(in_features=1024, out_features=1024, bias=True)
+      (3): ReLU()
+      (4): Linear(in_features=1024, out_features=3, bias=True)
+      (5): Sigmoid()
+    )
+  )
+  (class_embed_instrument): MLP(
+    (mlp): Sequential(
+      (0): Linear(in_features=1024, out_features=1024, bias=True)
+      (1): ReLU()
+      (2): Linear(in_features=1024, out_features=1024, bias=True)
+      (3): ReLU()
+      (4): Linear(in_features=1024, out_features=6, bias=True)
+      (5): Sigmoid()
+    )
+  )
+  (class_embed_pitch): MLP(
+    (mlp): Sequential(
+      (0): Linear(in_features=1024, out_features=1024, bias=True)
+      (1): ReLU()
+      (2): Linear(in_features=1024, out_features=1024, bias=True)
+      (3): ReLU()
+      (4): Linear(in_features=1024, out_features=129, bias=True)
+      (5): Sigmoid()
+    )
+  )
+  (bbox_embed): MLP(
+    (mlp): Sequential(
+      (0): Linear(in_features=1024, out_features=1024, bias=True)
+      (1): ReLU()
+      (2): Linear(in_features=1024, out_features=1024, bias=True)
+      (3): ReLU()
+      (4): Linear(in_features=1024, out_features=3, bias=True)
+      (5): ReLU()
+    )
+  )
+)
